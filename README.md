@@ -36,9 +36,9 @@
 
   TASKS.md              The task queue file (auto-created if missing).
 
-================================================================================
+
   QUICK START
-================================================================================
+
 
   1. Write your tasks in TASKS.md (see format below)
   2. Run:
@@ -51,9 +51,7 @@
 
      ./claude-start.sh --auto --location D:/Projects/MyApp
 
-================================================================================
-  TASK FILE FORMAT (TASKS.md)
-================================================================================
+TASK FILE FORMAT (TASKS.md)
 
   [ ] This task is pending — Tom will pounce on it
   [!] This task is in progress — Tom is chasing it right now (don't edit)
@@ -82,9 +80,7 @@
   - Include enough context that someone unfamiliar could do it
   - Keep tasks independent when possible (allows Jerry parallelism)
 
-================================================================================
   COMMANDS
-================================================================================
 
   ./claude-start.sh                                    Defaults: CWD, TASKS.md
   ./claude-start.sh --auto                             Skip permission prompts
@@ -104,9 +100,7 @@
     Terminal 2:  ./claude-qa.sh TASKS.md                     # Spike
     Terminal 3:  ./claude-supervisor.sh wed-dev TASKS.md "" --auto  # Big Mamma
 
-================================================================================
   HOW IT WORKS
-================================================================================
 
   🐱 TOM THE CAT (claude-worker.sh)
   ──────────────────────────────────
@@ -230,9 +224,8 @@
 
     D:/claude-stop.sh --location D:/Documents/MyProject
 
-================================================================================
   INTER-PROCESS COMMUNICATION
-================================================================================
+
 
   The household uses file-based IPC (no sockets, no pipes — we keep it
   old school, like a cartoon):
@@ -250,9 +243,8 @@
 
   All status files are auto-cleaned on shutdown.
 
-================================================================================
+
   LOGS
-================================================================================
 
   claude-worker.log              Tom's diary (structured, concise)
   claude-worker-output.log       Tom's full Claude output (verbose)
@@ -265,10 +257,8 @@
   When using claude-start.sh, the three main logs stream live to terminal.
   Task descriptions longer than 10 words are truncated with (...) in logs.
 
-================================================================================
   SAFETY
-================================================================================
-
+  
   - Will NOT push to main or master ("Big Mamma didn't raise no fool")
   - Debounces commits so rapid completions batch together
   - Never interrupts Tom mid-task
@@ -283,18 +273,14 @@
   - Ctrl+C kills all processes cleanly via trap handlers
   - Duplicate instance protection via lock file
 
-================================================================================
   ADDING TASKS WHILE RUNNING
-================================================================================
 
   You can edit TASKS.md while the House is running. Just add new [ ] lines
   at the bottom. Tom will pounce on them on his next cycle.
 
   Do NOT edit lines marked [!] — Tom or a Jerry is actively chasing those.
 
-================================================================================
   STOPPING
-================================================================================
 
   If running via claude-start.sh:   Ctrl+C (Big Mamma: "EVERYBODY OUT!")
 
@@ -302,9 +288,8 @@
                                     ./claude-stop.sh --location D:/Projects/App
                                     ./claude-stop.sh --force
 
-================================================================================
+
   TROUBLESHOOTING
-================================================================================
 
   Problem: Tom marks task [-] failed (*SPLAT*)
   Fix:     Check claude-worker.log for details. Rewrite the task to be
@@ -334,9 +319,9 @@
   Fix:     After 3 fix attempts, Spike gives up ("I'm too old for this")
            and allows push with warnings. Check claude-qa.log.
 
-================================================================================
+
   CAST CREDITS
-================================================================================
+
 
   Inspired by the classic Tom & Jerry cartoons.
 
@@ -345,5 +330,3 @@
   Spike just wants everyone to follow the rules.
 
   ...but together, they ship code. Somehow.
-
-================================================================================
