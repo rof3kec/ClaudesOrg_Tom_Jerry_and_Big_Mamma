@@ -1,0 +1,40 @@
+================================================================================
+  COMMANDS REFERENCE
+================================================================================
+
+  STARTING
+  ────────
+  ./claude-start.sh                          Launch all (worker + QA + supervisor) in current directory
+  ./claude-start.sh --auto                   Launch all, skip Claude permission prompts
+  ./claude-start.sh --location <path>        Launch all, working in a different project directory
+  ./claude-start.sh --branch <name>          Push to a specific git branch
+  ./claude-start.sh --tasks <file>           Use a custom task file instead of TASKS.md
+  ./claude-start.sh --main                   Merge to main branch when all tasks complete
+
+  STOPPING
+  ────────
+  Ctrl+C                                     Stop all (when running via claude-start.sh)
+  ./claude-stop.sh                           Kill all running processes, cleanup in current directory
+  ./claude-stop.sh --force                   Kill all using SIGKILL (hard kill)
+  ./claude-stop.sh --location <path>         Kill all and cleanup in a specific project directory
+
+  RUNNING COMPONENTS SEPARATELY
+  ─────────────────────────────
+  ./claude-worker.sh                         Start the primary worker (Tom) using TASKS.md
+  ./claude-worker.sh <file>                  Start worker with a custom task file
+  ./claude-worker.sh <file> --auto           Start worker, skip Claude permission prompts
+
+  ./claude-qa.sh                             Start the QA worker (Spike) using TASKS.md
+  ./claude-qa.sh <file>                      Start QA with a custom task file
+
+  ./claude-supervisor.sh                     Start supervisor, auto-detect branch
+  ./claude-supervisor.sh <branch> <file>     Start supervisor with explicit branch and task file
+  ./claude-supervisor.sh <branch> <file> --main        Supervisor + merge to main when done
+  ./claude-supervisor.sh <branch> <file> --main --auto Supervisor + merge + auto mode
+
+  COMBINED EXAMPLES
+  ─────────────────
+  ./claude-start.sh --auto --location D:/Projects/MyApp --branch feat --main
+  ./claude-stop.sh --force --location D:/Projects/MyApp
+
+================================================================================
