@@ -1,8 +1,6 @@
-================================================================================
   🏠 THE HOUSE — Tom, Jerry & Big Mamma Production System
-================================================================================
 
-  A cartoon-accurate autonomous Claude task processing system:
+  Autonomous Claude task processing system:
 
     👩🏽  Big Mamma .............. Supervisor (runs the house, bosses everyone)
     🐱  Tom the Cat ............ Primary Worker (chases tasks like mice)
@@ -15,9 +13,8 @@
   "If I've told you once, I've told you a THOUSAND times..."
                                                    — Big Mamma
 
-================================================================================
   THE CAST (FILES)
-================================================================================
+====================
 
   claude-start.sh       Opens the House — launches everyone in one command.
                         Ctrl+C = Big Mamma kicks everyone out.
