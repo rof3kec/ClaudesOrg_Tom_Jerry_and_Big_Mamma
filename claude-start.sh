@@ -35,10 +35,25 @@ LOCK_FILE=".claude-start.lock"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --auto)          AUTO_MODE="--auto"; shift ;;
-    --branch|-b)     BRANCH="$2"; shift 2 ;;
-    --tasks|-t)      TASK_FILE="$2"; shift 2 ;;
+    --branch|-b)
+      if [[ $# -lt 2 || "$2" == --* ]]; then
+        echo "ERROR: --branch requires a value.  Usage: --branch <name>"
+        exit 1
+      fi
+      BRANCH="$2"; shift 2 ;;
+    --tasks|-t)
+      if [[ $# -lt 2 || "$2" == --* ]]; then
+        echo "ERROR: --tasks requires a value.  Usage: --tasks <file>"
+        exit 1
+      fi
+      TASK_FILE="$2"; shift 2 ;;
     --main)          MERGE_MAIN="--main"; shift ;;
-    --location|-l)   LOCATION="$2"; shift 2 ;;
+    --location|-l)
+      if [[ $# -lt 2 || "$2" == --* ]]; then
+        echo "ERROR: --location requires a value.  Usage: --location <path>"
+        exit 1
+      fi
+      LOCATION="$2"; shift 2 ;;
     *)               echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -173,14 +188,17 @@ echo "║                                                              ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
-# Start Tom (stdout -> /dev/null, tail reads log file)
-bash "$SCRIPT_DIR/claude-worker.sh" "$TASK_FILE" $AUTO_MODE > /dev/null &
+# Ensure log files exist before tail -f
+touch claude-worker.log claude-qa.log claude-supervisor.log 2>/dev/null
+
+# Start Tom (stdout -> /dev/null, stderr -> log so crashes are visible)
+bash "$SCRIPT_DIR/claude-worker.sh" "$TASK_FILE" $AUTO_MODE > /dev/null 2>> claude-worker.log &
 WORKER_PID=$!
 echo "🐱 Tom the Cat enters the house (PID $WORKER_PID)"
 echo "   \"Alright, where are those tasks...\""
 
 # Start Spike
-bash "$SCRIPT_DIR/claude-qa.sh" "$TASK_FILE" > /dev/null &
+bash "$SCRIPT_DIR/claude-qa.sh" "$TASK_FILE" > /dev/null 2>> claude-qa.log &
 QA_PID=$!
 echo "🐶 Spike the Bulldog takes his post (PID $QA_PID)"
 echo "   *growl* \"I'm watching you, Tom.\""
@@ -189,7 +207,7 @@ echo "   *growl* \"I'm watching you, Tom.\""
 sleep 3
 
 # Start Big Mamma
-bash "$SCRIPT_DIR/claude-supervisor.sh" "$BRANCH" "$TASK_FILE" "$MERGE_MAIN" "$AUTO_MODE" > /dev/null &
+bash "$SCRIPT_DIR/claude-supervisor.sh" "$BRANCH" "$TASK_FILE" "$MERGE_MAIN" "$AUTO_MODE" > /dev/null 2>> claude-supervisor.log &
 SUPERVISOR_PID=$!
 echo "👩🏽 Big Mamma enters the house (PID $SUPERVISOR_PID)"
 echo "   \"Now y'all better BEHAVE yourselves!\""
@@ -208,6 +226,10 @@ while true; do
     echo ""
     echo "🐱💀 Tom has left the building unexpectedly!"
     echo "   Big Mamma: \"THOMAS?! Where did that cat GO?!\""
+    echo ""
+    echo "   ── Last lines from claude-worker.log ──"
+    tail -8 claude-worker.log 2>/dev/null || echo "   (no log available)"
+    echo "   ────────────────────────────────────────"
     break
   fi
   if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
@@ -215,12 +237,16 @@ while true; do
     echo "👩🏽💀 Big Mamma has left the building unexpectedly!"
     echo "   Tom: \"...Big Mamma? ...is she gone? ...FREEDOM!\""
     echo "   Spike: \"Not so fast, pussycat.\""
+    echo ""
+    echo "   ── Last lines from claude-supervisor.log ──"
+    tail -8 claude-supervisor.log 2>/dev/null || echo "   (no log available)"
+    echo "   ─────────────────────────────────────────────"
     break
   fi
   # Restart Spike if he wanders off (non-critical — shouldn't block work)
   if ! kill -0 "$QA_PID" 2>/dev/null; then
     echo "🐶 Spike wandered off — whistling him back..."
-    bash "$SCRIPT_DIR/claude-qa.sh" "$TASK_FILE" > /dev/null &
+    bash "$SCRIPT_DIR/claude-qa.sh" "$TASK_FILE" > /dev/null 2>> claude-qa.log &
     QA_PID=$!
     echo "🐶 Spike is back on patrol (PID $QA_PID)"
     echo "   *shake* \"Sorry, thought I saw a squirrel.\""
