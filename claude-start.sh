@@ -17,6 +17,18 @@
 
 set -u
 
+# ─── Error helper (shows message + pauses so Windows terminals don't vanish) ─
+
+fail() {
+  echo "$@" >&2
+  # If running in an interactive terminal, pause so the user can read the error
+  if [ -t 0 ]; then
+    echo ""
+    read -rp "Press Enter to close..."
+  fi
+  exit 1
+}
+
 # ─── Resolve script directory (where this script and siblings live) ──────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,24 +49,21 @@ while [[ $# -gt 0 ]]; do
     --auto)          AUTO_MODE="--auto"; shift ;;
     --branch|-b)
       if [[ $# -lt 2 || "$2" == --* ]]; then
-        echo "ERROR: --branch requires a value.  Usage: --branch <name>"
-        exit 1
+        fail "ERROR: --branch requires a value.  Usage: --branch <name>"
       fi
       BRANCH="$2"; shift 2 ;;
     --tasks|-t)
       if [[ $# -lt 2 || "$2" == --* ]]; then
-        echo "ERROR: --tasks requires a value.  Usage: --tasks <file>"
-        exit 1
+        fail "ERROR: --tasks requires a value.  Usage: --tasks <file>"
       fi
       TASK_FILE="$2"; shift 2 ;;
     --main)          MERGE_MAIN="--main"; shift ;;
     --location|-l)
       if [[ $# -lt 2 || "$2" == --* ]]; then
-        echo "ERROR: --location requires a value.  Usage: --location <path>"
-        exit 1
+        fail "ERROR: --location requires a value.  Usage: --location <path>"
       fi
       LOCATION="$2"; shift 2 ;;
-    *)               echo "Unknown arg: $1"; exit 1 ;;
+    *)               fail "Unknown arg: $1" ;;
   esac
 done
 
@@ -65,11 +74,10 @@ if [ -n "$LOCATION" ]; then
   LOCATION=$(echo "$LOCATION" | sed 's|\\|/|g; s|//|/|g')
 
   if [ ! -d "$LOCATION" ]; then
-    echo "ERROR: Location '$LOCATION' does not exist."
-    exit 1
+    fail "ERROR: Location '$LOCATION' does not exist."
   fi
 
-  cd "$LOCATION" || { echo "ERROR: Cannot cd to '$LOCATION'"; exit 1; }
+  cd "$LOCATION" || fail "ERROR: Cannot cd to '$LOCATION'"
   echo "[claude-start] Working directory: $(pwd)"
 fi
 
@@ -78,16 +86,13 @@ fi
 # Scripts must exist in SCRIPT_DIR
 for script in claude-worker.sh claude-supervisor.sh claude-qa.sh; do
   if [ ! -f "$SCRIPT_DIR/$script" ]; then
-    echo "ERROR: $script not found in $SCRIPT_DIR"
-    exit 1
+    fail "ERROR: $script not found in $SCRIPT_DIR"
   fi
 done
 
 # Must be inside a git repo
 if [ ! -d .git ]; then
-  echo "ERROR: $(pwd) is not a git repository."
-  echo "       Initialize one with: git init"
-  exit 1
+  fail "ERROR: $(pwd) is not a git repository. Initialize one with: git init"
 fi
 
 # Create TASKS.md if it doesn't exist
@@ -108,6 +113,33 @@ TASKEOF
   echo "[claude-start] Add tasks as: [ ] Your task description here"
 fi
 
+# ─── Branch & remote validation (before launching anything!) ───────────────
+
+if [ -z "$BRANCH" ]; then
+  BRANCH=$(git branch --show-current 2>/dev/null || true)
+  if [ -z "$BRANCH" ]; then
+    fail "ERROR: Could not detect current branch (detached HEAD?). Specify one with: --branch <name>"
+  fi
+fi
+
+if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
+  echo ""
+  echo "══════════════════════════════════════════════════════════════"
+  echo "  ERROR: You're on the '$BRANCH' branch!"
+  echo ""
+  echo "  Big Mamma REFUSES to push to '$BRANCH'. Use a dev branch."
+  echo ""
+  echo "  Fix:  git checkout -b my-feature"
+  echo "  Or:   ./claude-start.sh --branch my-feature"
+  echo "══════════════════════════════════════════════════════════════"
+  echo ""
+  fail ""
+fi
+
+if ! git remote get-url origin &>/dev/null; then
+  fail "ERROR: No 'origin' remote configured. Add one with: git remote add origin <url>"
+fi
+
 # ─── Duplicate instance protection ──────────────────────────────────────────
 
 if [ -f "$LOCK_FILE" ]; then
@@ -116,7 +148,7 @@ if [ -f "$LOCK_FILE" ]; then
     echo "ERROR: The House is already open! (PID $OLD_PID)"
     echo "       Close it first:  kill $OLD_PID"
     echo "       Or remove lock:  rm $LOCK_FILE"
-    exit 1
+    fail ""
   else
     echo "WARNING: Found a stale key in the lock (PID $OLD_PID not running). Removing."
     rm -f "$LOCK_FILE"
