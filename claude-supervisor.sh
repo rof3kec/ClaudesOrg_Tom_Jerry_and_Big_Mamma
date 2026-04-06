@@ -102,17 +102,33 @@ read_worker_status() {
   return 0
 }
 
-# ─── Spike's status ───────────────────────────────────────────────────────────
+# ─── Spike's & Sdike's status ─────────────────────────────────────────────────
 
 read_qa_status() {
   QA_STATE="idle"
   QA_VALIDATED_DONE=""
   QA_CHECKING_TASKS=""
-  [ -f "$QA_STATUS_FILE" ] || return 1
-  QA_STATE=$(grep '^STATE=' "$QA_STATUS_FILE" 2>/dev/null | cut -d= -f2)
-  QA_VALIDATED_DONE=$(grep '^VALIDATED_DONE=' "$QA_STATUS_FILE" 2>/dev/null | cut -d= -f2)
-  QA_CHECKING_TASKS=$(grep '^CHECKING_TASKS=' "$QA_STATUS_FILE" 2>/dev/null | cut -d= -f2-)
-  [ -n "$QA_STATE" ] || QA_STATE="idle"
+
+  # Read Spike's status (primary QA)
+  if [ -f "$QA_STATUS_FILE" ]; then
+    QA_STATE=$(grep '^STATE=' "$QA_STATUS_FILE" 2>/dev/null | cut -d= -f2)
+    QA_VALIDATED_DONE=$(grep '^VALIDATED_DONE=' "$QA_STATUS_FILE" 2>/dev/null | cut -d= -f2)
+    QA_CHECKING_TASKS=$(grep '^CHECKING_TASKS=' "$QA_STATUS_FILE" 2>/dev/null | cut -d= -f2-)
+    [ -n "$QA_STATE" ] || QA_STATE="idle"
+  fi
+
+  # If Spike hasn't passed, check if Sdike has (either brother's approval counts)
+  if [ "$QA_STATE" != "passed" ] && [ "$QA_STATE" != "passed_with_warnings" ] && [ -f "$SDIKE_STATUS_FILE" ]; then
+    local sdike_state
+    sdike_state=$(grep '^STATE=' "$SDIKE_STATUS_FILE" 2>/dev/null | cut -d= -f2)
+    if [ "$sdike_state" = "passed" ] || [ "$sdike_state" = "passed_with_warnings" ]; then
+      QA_STATE="$sdike_state"
+      QA_VALIDATED_DONE=$(grep '^VALIDATED_DONE=' "$SDIKE_STATUS_FILE" 2>/dev/null | cut -d= -f2)
+      QA_CHECKING_TASKS=$(grep '^CHECKING_TASKS=' "$SDIKE_STATUS_FILE" 2>/dev/null | cut -d= -f2-)
+    fi
+  fi
+
+  [ -f "$QA_STATUS_FILE" ] || [ -f "$SDIKE_STATUS_FILE" ] || return 1
   return 0
 }
 

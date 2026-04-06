@@ -33,10 +33,11 @@ CONFIG_FILE = SCRIPT_DIR / "ui-locations.json"
 PORT = int(os.environ.get("HOUSE_PORT", 5005))
 
 LOG_MAP = {
-    "all": ["claude-supervisor.log", "claude-worker.log", "claude-qa.log"],
+    "all": ["claude-supervisor.log", "claude-worker.log", "claude-qa.log", "claude-qa-sdike.log"],
     "big_mamma": ["claude-supervisor.log"],
     "tom": ["claude-worker.log"],
     "spike": ["claude-qa.log"],
+    "sdike": ["claude-qa-sdike.log"],
 }
 
 INSTANCES_FILE = SCRIPT_DIR / ".house-instances"
@@ -285,6 +286,16 @@ def get_agents(loc):
         "state": _live_state(qs),
         "task": "",
     })
+
+    # Sdike (Spike's brother — auto-spawned when QA queue >= 5)
+    sdike_qs = read_kv(os.path.join(loc, ".qa-status-sdike"))
+    if sdike_qs:
+        agents.append({
+            "id": "sdike", "name": "Sdike",
+            "role": "QA Backup (Spike's brother)",
+            "state": _live_state(sdike_qs),
+            "task": "",
+        })
 
     return agents
 

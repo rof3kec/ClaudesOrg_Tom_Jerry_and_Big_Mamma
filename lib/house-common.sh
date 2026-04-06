@@ -23,6 +23,7 @@ LOCK_DIR="${LOCK_DIR:-.tasks.lock}"
 HIBERNATE_FILE="${HIBERNATE_FILE:-.worker-hibernate}"
 WORKER_STATUS_FILE="${WORKER_STATUS_FILE:-.worker-status}"
 QA_STATUS_FILE="${QA_STATUS_FILE:-.qa-status}"
+SDIKE_STATUS_FILE="${SDIKE_STATUS_FILE:-.qa-status-sdike}"
 WORKER_PID_FILE="${WORKER_PID_FILE:-.claude-worker.pid}"
 MAX_LOG_SIZE="${MAX_LOG_SIZE:-1048576}"    # 1MB
 
