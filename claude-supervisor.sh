@@ -10,11 +10,12 @@
 #   ./claude-supervisor.sh my-dev TASKS.md                   # branch + task file
 #   ./claude-supervisor.sh my-dev TASKS.md --main            # merge to main when done
 #   ./claude-supervisor.sh my-dev TASKS.md --main --auto     # auto mode for parallel
+#   ./claude-supervisor.sh my-dev TASKS.md --main --auto 4   # 4 Jerry slots
 #
 # Architecture:
 #   Big Mamma (the boss) coordinates:
 #     - 🐱 Tom (claude-worker.sh) — primary task chaser
-#     - 🐭 2x Jerry (spawned in git worktrees) — parallel sneaky workers
+#     - 🐭 Nx Jerry (spawned in git worktrees) — parallel sneaky workers
 #     - 🐶 Spike (claude-qa.sh) — quality enforcer
 #   Big Mamma handles: commits, pushes, merges, hibernation, stale recovery.
 
@@ -24,6 +25,7 @@ BRANCH="${1:-}"
 TASK_FILE="${2:-TASKS.md}"
 MERGE_MAIN="${3:-}"
 AUTO_MODE="${4:-}"
+MAX_PARALLEL="${5:-2}"
 LOG_FILE="claude-supervisor.log"
 POLL_INTERVAL=15
 LAST_DONE_COUNT=0
@@ -39,19 +41,32 @@ STATUS_FILE=".worker-status"
 MAX_TASK_AGE=600           # 10 min — warn if task exceeds this
 PUSH_PENDING=false
 MERGED_TO_MAIN=false
+ALL_DONE_LOGGED=false        # suppress repeated "all done" spam
+IDLE_SHUTDOWN_AFTER=1800     # 30 min idle with no tasks = graceful shutdown
+IDLE_SHUTDOWN_START=0        # timestamp when idle shutdown timer started
+RETRY_MAX=1                  # max retries for [-] failed tasks
+RETRIED_TASKS=""             # track which tasks we've already retried (by content hash)
 
 # Spike (QA) integration
 QA_STATUS_FILE=".qa-status"
 QA_STATE=""
+QA_CHECKING_TASKS=""
 
-# Jerry (parallel workers) — 2 slots (indexed 0 and 1)
-MAX_PARALLEL=2
-P_PIDS=("" "")
-P_WORKTREES=("" "")
-P_BRANCHES=("" "")
-P_TASK_LINES=("" "")
-P_TASK_DESCS=("" "")
-P_ACTIVE=(false false)
+# Jerry (parallel workers) — N slots (configured via --jerries flag, eagerly filled)
+P_PIDS=()
+P_WORKTREES=()
+P_BRANCHES=()
+P_TASK_LINES=()
+P_TASK_DESCS=()
+P_ACTIVE=()
+for ((_ji=0; _ji<MAX_PARALLEL; _ji++)); do
+  P_PIDS+=("")
+  P_WORKTREES+=("")
+  P_BRANCHES+=("")
+  P_TASK_LINES+=("")
+  P_TASK_DESCS+=("")
+  P_ACTIVE+=(false)
+done
 PARALLEL_LAST_ANALYSIS=0
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,8 +92,91 @@ short() {
   fi
 }
 
+# ─── Section-aware task selection ──────────────────────────────────────────────
+# Finds the first ## section (after the separator) with incomplete tasks
+# ([ ], [!], or [-]). Sets ACTIVE_SECTION_START, ACTIVE_SECTION_END (line
+# numbers, inclusive), and ACTIVE_SECTION_NAME.
+# If no ## headings exist after the separator, the whole area is one section.
+# Returns 1 if no active section found.
+
+find_active_section() {
+  local task_file="$1"
+  local sep_line="${2:-0}"
+  ACTIVE_SECTION_START=0
+  ACTIVE_SECTION_END=0
+  ACTIVE_SECTION_NAME=""
+
+  local total_lines
+  total_lines=$(wc -l < "$task_file" 2>/dev/null | tr -d ' ')
+  total_lines="${total_lines:-0}"
+  [ "$total_lines" -eq 0 ] && return 1
+
+  # Collect ## heading line numbers after the separator
+  local -a sec_starts=()
+  local -a sec_names=()
+  while IFS= read -r heading; do
+    local hline hname
+    hline=$(echo "$heading" | cut -d: -f1)
+    if [ "$hline" -gt "$sep_line" ]; then
+      hname=$(echo "$heading" | sed 's/^[0-9]*:## //')
+      sec_starts+=("$hline")
+      sec_names+=("$hname")
+    fi
+  done < <(grep -n '^## ' "$task_file" 2>/dev/null || true)
+
+  # No sections: treat everything after separator as one flat section
+  if [ ${#sec_starts[@]} -eq 0 ]; then
+    ACTIVE_SECTION_START=$((sep_line + 1))
+    ACTIVE_SECTION_END=$total_lines
+    ACTIVE_SECTION_NAME="(all tasks)"
+    if sed -n "${ACTIVE_SECTION_START},${ACTIVE_SECTION_END}p" "$task_file" 2>/dev/null | grep -qE '^\[[ !-]\] '; then
+      return 0
+    fi
+    return 1
+  fi
+
+  # Check for ungrouped tasks between separator and first heading
+  local first_sec="${sec_starts[0]}"
+  if [ "$first_sec" -gt $((sep_line + 1)) ]; then
+    local range_start=$((sep_line + 1))
+    local range_end=$((first_sec - 1))
+    if sed -n "${range_start},${range_end}p" "$task_file" 2>/dev/null | grep -qE '^\[[ !-]\] '; then
+      ACTIVE_SECTION_START=$range_start
+      ACTIVE_SECTION_END=$range_end
+      ACTIVE_SECTION_NAME="(ungrouped)"
+      return 0
+    fi
+  fi
+
+  # Check each section in order — first with incomplete tasks wins
+  for ((si=0; si<${#sec_starts[@]}; si++)); do
+    local s_start="${sec_starts[$si]}"
+    local s_end
+    if [ $((si + 1)) -lt ${#sec_starts[@]} ]; then
+      s_end=$(( ${sec_starts[$((si + 1))]} - 1 ))
+    else
+      s_end=$total_lines
+    fi
+    if sed -n "${s_start},${s_end}p" "$task_file" 2>/dev/null | grep -qE '^\[[ !-]\] '; then
+      ACTIVE_SECTION_START=$s_start
+      ACTIVE_SECTION_END=$s_end
+      ACTIVE_SECTION_NAME="${sec_names[$si]}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 # Verbose log for git command output (keeps main log clean)
 VERBOSE_LOG="claude-supervisor-verbose.log"
+
+# ANSI colors for task event visibility (rendered by tail -f in terminal)
+_C_RST=$'\033[0m'
+_C_BLUE=$'\033[1;94m'
+_C_GREEN=$'\033[1;92m'
+_C_RED=$'\033[1;91m'
+_C_YELLOW=$'\033[1;93m'
 
 # ─── File locking (mkdir is atomic on all platforms) ─────────────────────────
 
@@ -101,29 +199,40 @@ unlock_tasks() {
 }
 
 # ─── Task counters ────────────────────────────────────────────────────────────
+# Note: These use a single grep call to count all states at once, reducing
+# subprocess spawns on Windows where fork() is expensive (cygwin/MSYS2).
+
+_update_task_counts() {
+  # Read all counts in one pass to minimize fork overhead
+  _COUNT_DONE=0 _COUNT_IP=0 _COUNT_PENDING=0 _COUNT_FAILED=0
+  while IFS= read -r line; do
+    case "$line" in
+      "[x] "*) _COUNT_DONE=$((_COUNT_DONE + 1)) ;;
+      "[!] "*) _COUNT_IP=$((_COUNT_IP + 1)) ;;
+      "[ ] "*) _COUNT_PENDING=$((_COUNT_PENDING + 1)) ;;
+      "[-] "*) _COUNT_FAILED=$((_COUNT_FAILED + 1)) ;;
+    esac
+  done < "$TASK_FILE" 2>/dev/null
+}
 
 count_done() {
-  local n
-  n=$(grep -c '^\[x\] ' "$TASK_FILE" 2>/dev/null) || true
-  echo "${n:-0}"
+  _update_task_counts
+  echo "$_COUNT_DONE"
 }
 
 count_in_progress() {
-  local n
-  n=$(grep -c '^\[!\] ' "$TASK_FILE" 2>/dev/null) || true
-  echo "${n:-0}"
+  _update_task_counts
+  echo "$_COUNT_IP"
 }
 
 count_pending() {
-  local n
-  n=$(grep -c '^\[ \] ' "$TASK_FILE" 2>/dev/null) || true
-  echo "${n:-0}"
+  _update_task_counts
+  echo "$_COUNT_PENDING"
 }
 
 count_failed() {
-  local n
-  n=$(grep -c '^\[-\] ' "$TASK_FILE" 2>/dev/null) || true
-  echo "${n:-0}"
+  _update_task_counts
+  echo "$_COUNT_FAILED"
 }
 
 has_changes() {
@@ -203,12 +312,14 @@ read_worker_status() {
 # ─── Spike's status ───────────────────────────────────────────────────────────
 
 read_qa_status() {
-  # Sets QA_STATE and QA_VALIDATED_DONE globals. Returns 0 if file exists.
+  # Sets QA_STATE, QA_VALIDATED_DONE, and QA_CHECKING_TASKS globals. Returns 0 if file exists.
   QA_STATE="idle"
   QA_VALIDATED_DONE=""
+  QA_CHECKING_TASKS=""
   [ -f "$QA_STATUS_FILE" ] || return 1
   QA_STATE=$(grep '^STATE=' "$QA_STATUS_FILE" 2>/dev/null | cut -d= -f2)
   QA_VALIDATED_DONE=$(grep '^VALIDATED_DONE=' "$QA_STATUS_FILE" 2>/dev/null | cut -d= -f2)
+  QA_CHECKING_TASKS=$(grep '^CHECKING_TASKS=' "$QA_STATUS_FILE" 2>/dev/null | cut -d= -f2-)
   [ -n "$QA_STATE" ] || QA_STATE="idle"
   return 0
 }
@@ -238,6 +349,16 @@ recover_stale_tasks() {
       fi
     fi
   done
+
+  # Also exclude Tom's active task if he's alive
+  if read_worker_status && [ -n "$WSTAT_TASK_LINE" ] && [ "$WSTAT_STATE" = "running" ]; then
+    local tom_pid="${WSTAT_WORKER_PID:-}"
+    if [ -n "$tom_pid" ] && is_process_alive "$tom_pid"; then
+      exclude_lines="${exclude_lines:+$exclude_lines,}${WSTAT_TASK_LINE}"
+      exclude_count=$((exclude_count + 1))
+      stale_count=$((stale_count - 1))
+    fi
+  fi
 
   if [ "$stale_count" -eq 0 ]; then
     unlock_tasks
@@ -298,9 +419,12 @@ cleanup_done_tasks() {
 
   log "👩🏽🧹 Big Mamma's tidying the task list: $to_remove/$done_count done task(s) (Spike validated: $max_remove)"
 
-  # Remove first N [x] lines (top-to-bottom order matches execution order)
-  awk -v n="$to_remove" '/^\[x\] / && removed < n { removed++; next } { print }' \
-    "$TASK_FILE" > "$TASK_FILE.tmp" && mv "$TASK_FILE.tmp" "$TASK_FILE"
+  # Remove first N [x] lines + their continuation lines
+  awk -v n="$to_remove" '
+    /^\[x\] / && removed < n { removed++; skipping=1; next }
+    skipping && !/^\[[ xX!-]\] / && !/^#/ && !/^_{5,}/ && NF { next }
+    { skipping=0; print }
+  ' "$TASK_FILE" > "$TASK_FILE.tmp" && mv "$TASK_FILE.tmp" "$TASK_FILE"
 
   # Collapse 3+ consecutive blank lines -> 2
   awk 'NF{c=0;print;next} {c++} c<=2{print}' "$TASK_FILE" > "$TASK_FILE.tmp" && mv "$TASK_FILE.tmp" "$TASK_FILE"
@@ -316,6 +440,69 @@ cleanup_done_tasks() {
   LAST_DONE_COUNT=$(count_done)
 
   log "   👩🏽✓ House is tidy. That's how we DO things around here."
+}
+
+# ─── Log Rotation ──────────────────────────────────────────────────────────
+
+MAX_LOG_SIZE=1048576  # 1MB in bytes
+
+rotate_log_if_needed() {
+  local file="$1"
+  [ -f "$file" ] || return
+  local size
+  size=$(wc -c < "$file" 2>/dev/null | tr -d ' ')
+  if [ "${size:-0}" -gt "$MAX_LOG_SIZE" ]; then
+    mv "$file" "${file}.old" 2>/dev/null || true
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [BIG MAMMA] Log rotated (was ${size} bytes)" > "$file"
+  fi
+}
+
+# ─── Retry Failed Tasks ───────────────────────────────────────────────────
+
+retry_failed_tasks() {
+  # Only retry when no pending/in-progress tasks remain and retries are allowed
+  [ "$PENDING" -eq 0 ] && [ "$IN_PROGRESS" -eq 0 ] || return 1
+  [ "$FAILED" -gt 0 ] || return 1
+
+  local retried=0
+  lock_tasks
+
+  # Read each [-] line, hash its content, check if already retried
+  local tmpfile="$TASK_FILE.retry.tmp"
+  while IFS= read -r line; do
+    if echo "$line" | grep -q '^\[-\] '; then
+      local task_content
+      task_content=$(echo "$line" | sed 's/^\[-\] //')
+      local task_hash
+      task_hash=$(echo "$task_content" | cksum | cut -d' ' -f1)
+
+      if echo "$RETRIED_TASKS" | grep -qw "$task_hash"; then
+        # Already retried this task — leave it as failed
+        echo "$line"
+      else
+        # Retry: change [-] back to [ ]
+        echo "[ ] $task_content"
+        RETRIED_TASKS="${RETRIED_TASKS:+$RETRIED_TASKS }$task_hash"
+        retried=$((retried + 1))
+      fi
+    else
+      echo "$line"
+    fi
+  done < "$TASK_FILE" > "$tmpfile"
+
+  if [ "$retried" -gt 0 ]; then
+    mv "$tmpfile" "$TASK_FILE"
+    unlock_tasks
+    log "👩🏽🔄 Big Mamma recycled $retried failed task(s) for ONE more try."
+    log "   \"Everybody deserves a second chance... but NOT a third.\""
+    wake_worker
+    ALL_DONE_LOGGED=false
+    return 0
+  else
+    rm -f "$tmpfile"
+    unlock_tasks
+    return 1
+  fi
 }
 
 # ─── Hibernation Control ────────────────────────────────────────────────────
@@ -414,92 +601,99 @@ merge_to_main() {
   git checkout "$BRANCH" >> "$VERBOSE_LOG" 2>&1 || true
 }
 
-# ─── Jerry (Parallel Worker) Management — 2 slots ──────────────────────────
+# ─── Jerry (Parallel Worker) Management ───────────────────────────────────
 
-analyze_for_parallelism() {
-  # Count free Jerry slots
+fill_jerry_slots() {
+  # Eagerly fill free Jerry slots with pending tasks — instant, no LLM analysis.
+  # Worktree isolation + merge conflict handling provides safety; failures requeue.
+  # This replaces the old analyze_for_parallelism() which required a slow claude -p
+  # call per cycle, making it impossible to fill more than 1-2 slots at a time.
   local free_slots=0
   for ((i=0; i<MAX_PARALLEL; i++)); do
     [ "${P_ACTIVE[$i]}" = false ] && free_slots=$((free_slots + 1))
   done
   [ "$free_slots" -eq 0 ] && return 1
-  [ "$PENDING" -lt 2 ] && return 1
-  [ "$IN_PROGRESS" -eq 0 ] && return 1
-  [ "$PENDING" -eq "$PARALLEL_LAST_ANALYSIS" ] && return 1
+  [ "$PENDING" -lt 1 ] && return 1
 
-  PARALLEL_LAST_ANALYSIS=$PENDING
-
-  log "👩🏽🔍 Hmm... $PENDING pending tasks and $free_slots Jerry slot(s) free. Let me think..."
-
-  # Get pending tasks with line numbers
-  PENDING_TASKS=$(grep -n '^\[ \] ' "$TASK_FILE" | head -10)
-
-  # Gather ALL currently in-progress tasks for context
-  IN_PROGRESS_TASKS=""
-  if read_worker_status && [ -n "$WSTAT_TASK_DESC" ]; then
-    IN_PROGRESS_TASKS="Primary worker: $WSTAT_TASK_DESC"
+  # Cooldown: don't re-scan if we just deployed (prevents spinning on same state)
+  local now_ts
+  now_ts=$(date +%s)
+  if [ $((now_ts - PARALLEL_LAST_ANALYSIS)) -lt 10 ]; then
+    return 1
   fi
-  for ((i=0; i<MAX_PARALLEL; i++)); do
-    if [ "${P_ACTIVE[$i]}" = true ]; then
-      IN_PROGRESS_TASKS="${IN_PROGRESS_TASKS:+$IN_PROGRESS_TASKS
-}Parallel worker #$i: ${P_TASK_DESCS[$i]}"
+
+  # Find active section (section-aware delegation)
+  local sep_line
+  sep_line=$(grep -n '^_{5,}' "$TASK_FILE" 2>/dev/null | head -1 | cut -d: -f1)
+  sep_line="${sep_line:-0}"
+
+  if ! find_active_section "$TASK_FILE" "$sep_line"; then
+    return 1
+  fi
+
+  log "👩🏽🐭 Pending task(s) in '$ACTIVE_SECTION_NAME', $free_slots Jerry slot(s) free — filling them up!"
+
+  # Reserve first pending task for Tom (unless Tom is already busy)
+  local skip_first=1
+  if is_claude_alive; then
+    skip_first=0  # Tom is busy — Jerry can take everything
+  fi
+
+  local spawned=0
+  local skipped=0
+  while IFS= read -r candidate; do
+    [ "$free_slots" -le 0 ] && break
+    local line_num
+    line_num=$(echo "$candidate" | cut -d: -f1)
+    [ "$line_num" -lt "$ACTIVE_SECTION_START" ] && continue
+    [ "$line_num" -gt "$ACTIVE_SECTION_END" ] && break
+
+    # Leave first pending task for Tom's sequential queue
+    if [ "$skip_first" -gt 0 ] && [ "$skipped" -lt "$skip_first" ]; then
+      skipped=$((skipped + 1))
+      continue
     fi
-  done
 
-  # Ask Claude to identify independent tasks
-  CLAUDE_ANALYZE="claude -p"
-  [ "$AUTO_MODE" = "--auto" ] && CLAUDE_ANALYZE="$CLAUDE_ANALYZE --dangerously-skip-permissions"
+    local slot
+    slot=$(find_free_slot) || break
 
-  ANALYSIS=$($CLAUDE_ANALYZE "You are analyzing tasks for a software project.
+    local task_desc
+    task_desc=$(echo "$candidate" | sed 's/^[0-9]*:\[ \] //')
 
-Identify up to $free_slots task(s) that can safely run in PARALLEL with the current work. Each must:
-- Touch DIFFERENT files/features than any in-progress task
-- Touch DIFFERENT files/features than each other
-- Have NO dependency on other pending tasks
-- Be self-contained
-
-Currently in progress:
-$IN_PROGRESS_TASKS
-
-Pending tasks:
-$PENDING_TASKS
-
-Reply with comma-separated line numbers, e.g.: PARALLEL:18,25
-If only one is safe: PARALLEL:18
-If none are safe: NONE" 2>/dev/null) || true
-
-  if echo "$ANALYSIS" | grep -q "PARALLEL:"; then
-    P_LINES=$(echo "$ANALYSIS" | grep "PARALLEL:" | head -1 | sed 's/.*PARALLEL://' | tr -d ' \r\n')
-
-    # Parse comma-separated line numbers
-    IFS=',' read -ra LINE_NUMS <<< "$P_LINES"
-
-    local spawned=0
-    for line_num in "${LINE_NUMS[@]}"; do
-      line_num=$(echo "$line_num" | tr -d ' ')
-      [ -z "$line_num" ] && continue
-
-      # Find a free slot
-      local slot
-      slot=$(find_free_slot) || break
-
-      # Validate it's a pending task
-      TASK_AT_LINE=$(sed -n "${line_num}p" "$TASK_FILE" 2>/dev/null)
-      if echo "$TASK_AT_LINE" | grep -q '^\[ \] '; then
-        P_DESC=$(echo "$TASK_AT_LINE" | sed 's/^\[ \] //')
-        spawn_parallel_worker "$slot" "$line_num" "$P_DESC"
-        spawned=$((spawned + 1))
-      else
-        log "👩🏽⚠ Line $line_num ain't a pending task. Skipping that nonsense."
+    # Read continuation lines (multi-line task descriptions)
+    local _cnext=$(( line_num + 1 ))
+    while [ "$_cnext" -le "$ACTIVE_SECTION_END" ]; do
+      local _ccont
+      _ccont=$(sed -n "${_cnext}p" "$TASK_FILE")
+      if [ -z "$_ccont" ] || echo "$_ccont" | grep -qE '^\[[ xX!-]\] |^#+ |^_{5,}'; then
+        break
       fi
+      task_desc="${task_desc}
+${_ccont}"
+      _cnext=$((_cnext + 1))
     done
 
-    [ "$spawned" -gt 0 ] && return 0
-  else
-    log "   👩🏽 No independent tasks found — everybody stays in LINE. Sequential it is."
-  fi
+    # Skip status-like lines that aren't real tasks
+    if echo "$task_desc" | grep -qiE '^(pending|done|in progress|failed|waiting)(\s|$)'; then
+      continue
+    fi
 
-  return 1
+    spawn_parallel_worker "$slot" "$line_num" "$task_desc"
+    # Only count as deployed if P_ACTIVE was actually set (spawn can fail on verify/worktree)
+    if [ "${P_ACTIVE[$slot]}" = true ]; then
+      spawned=$((spawned + 1))
+      free_slots=$((free_slots - 1))
+    else
+      log "🐭⚠ Jerry #$slot failed to launch for line $line_num — slot still free, trying next task"
+    fi
+  done < <(grep -n '^\[ \] ' "$TASK_FILE" 2>/dev/null || true)
+
+  PARALLEL_LAST_ANALYSIS=$now_ts
+
+  if [ "$spawned" -gt 0 ]; then
+    log "👩🏽🐭 Deployed $spawned Jerry(s)! \"Y'all better WORK, not just STAND there!\""
+  fi
+  return 0
 }
 
 spawn_parallel_worker() {
@@ -511,15 +705,22 @@ spawn_parallel_worker() {
   local status_file=".parallel-status-$slot"
   local log_file="claude-parallel-$slot.log"
 
-  log "🐭🚀 Jerry #$slot, get in there! Task #${task_line}: $(short "$task_desc")"
-  log "   \"Sneaky sneaky...\" — Jerry"
+  log "${_C_BLUE}▶ TASK STARTED ─── [Jerry #${slot}] #${task_line}: ${task_desc}${_C_RST}"
 
-  # Mark task as in-progress
+  # Mark task as in-progress (with race-condition guard)
   lock_tasks
   if [[ "$OSTYPE" == "darwin"* ]]; then
     sed -i '' "${task_line}s/^\[ \] /[!] /" "$TASK_FILE"
   else
     sed -i "${task_line}s/^\[ \] /[!] /" "$TASK_FILE"
+  fi
+  # Verify the mark stuck (prevent race with Tom picking up the same task)
+  local verify
+  verify=$(sed -n "${task_line}p" "$TASK_FILE" 2>/dev/null)
+  if ! echo "$verify" | grep -q '^\[!\] '; then
+    unlock_tasks
+    log "🐭⚠ Jerry #$slot: task at line $task_line already claimed. Skipping."
+    return
   fi
   unlock_tasks
 
@@ -537,24 +738,34 @@ spawn_parallel_worker() {
     return
   fi
 
-  # Write Jerry's status
+  # Write Jerry's status (flatten desc for KEY=VALUE format)
+  local safe_desc="${task_desc//$'\n'/ }"
   cat > "$status_file" <<EOF
 STATE=running
 SLOT=$slot
 TASK_LINE=$task_line
-TASK_DESC=$task_desc
+TASK_DESC=$safe_desc
 BRANCH=$branch_name
 WORKTREE=$worktree_dir
 STARTED=$(date +%s)
+UPDATED=$(date +%s)
 EOF
 
   # Build command
   CLAUDE_SPAWN="claude -p"
   [ "$AUTO_MODE" = "--auto" ] && CLAUDE_SPAWN="$CLAUDE_SPAWN --dangerously-skip-permissions"
 
+  # Build context for Jerry
+  JERRY_CONTEXT=""
+  if [ -n "$MAMMA_INSTRUCTIONS" ]; then
+    JERRY_CONTEXT="
+
+Project context: $MAMMA_INSTRUCTIONS"
+  fi
+
   # Spawn Claude in Jerry's hideout (worktree)
   (cd "$worktree_dir" && $CLAUDE_SPAWN "$task_desc
-
+${JERRY_CONTEXT}
 (IMPORTANT: You are running in an isolated git worktree. Edit files only — do NOT run build, test, or install commands like pnpm install, tsc, etc. A QA worker will verify your changes after merge.)" >> "../../$log_file" 2>&1) &
 
   P_PIDS[$slot]=$!
@@ -575,6 +786,8 @@ check_parallel_workers() {
       # Still running — periodic status
       local status_file=".parallel-status-$i"
       if [ -f "$status_file" ]; then
+        # Heartbeat: refresh UPDATED so the dashboard knows Jerry is alive
+        sed -i "s/^UPDATED=.*/UPDATED=$(date +%s)/" "$status_file" 2>/dev/null
         local p_started
         p_started=$(grep '^STARTED=' "$status_file" 2>/dev/null | cut -d= -f2)
         if [ -n "$p_started" ]; then
@@ -594,11 +807,10 @@ check_parallel_workers() {
     local p_exit=$?
 
     if [ "$p_exit" -eq 0 ]; then
-      log "🐭✓ Jerry #$i pulled it off! Task #${P_TASK_LINES[$i]} complete!"
-      log "   *tiny mouse victory dance*"
+      log "${_C_GREEN}✓ TASK DONE ─── [Jerry #${i}] #${P_TASK_LINES[$i]}: ${P_TASK_DESCS[$i]}${_C_RST}"
       merge_parallel_worker "$i"
     else
-      log "🐭💥 Jerry #$i got caught in a mousetrap! (exit $p_exit). Re-queuing for Tom."
+      log "${_C_RED}✗ TASK FAILED ─── [Jerry #${i}] #${P_TASK_LINES[$i]} (exit $p_exit): ${P_TASK_DESCS[$i]}${_C_RST}"
       lock_tasks
       local tl="${P_TASK_LINES[$i]}"
       if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -682,10 +894,23 @@ cleanup_parallel_slot() {
   log "   🐭 Jerry #$slot's hideout demolished. Clean slate."
 }
 
+# Kill a process and all its children (tree kill on Windows)
+kill_tree() {
+  local pid="$1"
+  if [ -f "/proc/$pid/winpid" ]; then
+    local winpid
+    winpid=$(cat "/proc/$pid/winpid" 2>/dev/null || true)
+    if [ -n "$winpid" ]; then
+      taskkill //T //F //PID "$winpid" > /dev/null 2>&1 && return 0
+    fi
+  fi
+  kill "$pid" 2>/dev/null
+}
+
 cleanup_all_parallel() {
   for ((i=0; i<MAX_PARALLEL; i++)); do
     if [ "${P_ACTIVE[$i]}" = true ]; then
-      [ -n "${P_PIDS[$i]}" ] && kill "${P_PIDS[$i]}" 2>/dev/null
+      [ -n "${P_PIDS[$i]}" ] && kill_tree "${P_PIDS[$i]}"
       cleanup_parallel_slot "$i"
     fi
   done
@@ -721,11 +946,35 @@ if ! git remote get-url origin &>/dev/null; then
   die "No 'origin' remote configured."
 fi
 
+# ─── Read CLAUDE.md and Mamma Instructions ─────────────────────────────────
+
+CLAUDE_MD_CONTENT=""
+if [ -f "CLAUDE.md" ]; then
+  CLAUDE_MD_CONTENT=$(cat "CLAUDE.md" 2>/dev/null | head -200)
+  log "👩🏽📖 Big Mamma read the CLAUDE.md. She knows what's what."
+else
+  log "👩🏽 No CLAUDE.md found. Big Mamma's flying blind — but she's BEEN doing this."
+fi
+
+MAMMA_INSTRUCTIONS=""
+if [ -f "$TASK_FILE" ]; then
+  # Extract content between "## Mamma Instructions" and the separator line or next heading
+  MAMMA_INSTRUCTIONS=$(awk '
+    /^## Mamma Instructions/{ found=1; next }
+    found && /^_{5,}|^## |^# /{ exit }
+    found { print }
+  ' "$TASK_FILE" 2>/dev/null | sed '/^<!--/,/-->$/d; /^$/d' | head -100)
+  if [ -n "$MAMMA_INSTRUCTIONS" ]; then
+    log "👩🏽📋 Mamma Instructions loaded. Big Mamma knows the PLAN."
+  fi
+fi
+
 # ─── State ───────────────────────────────────────────────────────────────────
 
 LAST_DONE_COUNT=$(count_done)
 LAST_CHANGE_TIME=0
 PENDING_COMMIT=false
+CURRENT_ACTIVE_SECTION=""
 
 # Cleanup on exit
 cleanup_supervisor() {
@@ -734,11 +983,14 @@ cleanup_supervisor() {
   rm -rf "$LOCK_DIR"
   log "👩🏽 Big Mamma has left the building. Y'all are on your OWN now."
 }
-trap cleanup_supervisor EXIT INT TERM
+trap cleanup_supervisor EXIT
+trap 'cleanup_supervisor; exit 0' INT TERM
 
 # Start fresh
 rm -f "$HIBERNATE_FILE"
 rm -rf "$LOCK_DIR"
+# Prune stale worktrees from previous runs (prevents git worktree add failures)
+git worktree prune >> "$VERBOSE_LOG" 2>&1 || true
 
 log "╔═══════════════════════════════════════════════════════╗"
 log "║  👩🏽 Big Mamma's in the HOUSE! Everybody BEHAVE!       ║"
@@ -746,20 +998,54 @@ log "╚════════════════════════
 log "Branch: $BRANCH"
 log "Task file: $TASK_FILE"
 log "Auto mode: ${AUTO_MODE:-off}"
+log "CLAUDE.md: $([ -n "$CLAUDE_MD_CONTENT" ] && echo 'loaded ✓' || echo 'not found')"
+log "Mamma Instructions: $([ -n "$MAMMA_INSTRUCTIONS" ] && echo 'loaded ✓' || echo 'none')"
 log "Jerry slots: $MAX_PARALLEL"
 log "Poll interval: ${POLL_INTERVAL}s"
 log "Commit debounce: ${COMMIT_BATCH_WAIT}s"
 log "Roll call: $(count_done) done, $(count_in_progress) in-progress, $(count_pending) pending, $(count_failed) failed"
 log "\"Now let's get this house in ORDER.\""
 
+# ─── Startup recovery: reset orphaned [!] tasks ─────────────────────────────
+_update_task_counts
+STARTUP_STALE=$_COUNT_IP
+if [ "$STARTUP_STALE" -gt 0 ]; then
+  log "👩🏽😤 $STARTUP_STALE task(s) stuck at [!] from last session! Nobody's working yet — resetting ALL."
+  log "   \"Lord have mercy, y'all left the STOVE on!\""
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' 's/^\[!\] /[ ] /' "$TASK_FILE"
+  else
+    sed -i 's/^\[!\] /[ ] /' "$TASK_FILE"
+  fi
+  LAST_DONE_COUNT=$(count_done)
+  log "   👩🏽✓ Reset $STARTUP_STALE orphaned task(s) back to pending. Fresh start."
+fi
+
 # ─── Main loop ───────────────────────────────────────────────────────────────
 
 while true; do
-  CURRENT_DONE=$(count_done)
-  IN_PROGRESS=$(count_in_progress)
-  PENDING=$(count_pending)
-  FAILED=$(count_failed)
+  # Single pass through TASKS.md for all counts (avoids 4 separate grep subshells)
+  _update_task_counts
+  CURRENT_DONE=$_COUNT_DONE
+  IN_PROGRESS=$_COUNT_IP
+  PENDING=$_COUNT_PENDING
+  FAILED=$_COUNT_FAILED
   NOW=$(date +%s)
+
+  # Track active section transitions (section-aware delegation)
+  _sep=$(grep -n '^_{5,}' "$TASK_FILE" 2>/dev/null | head -1 | cut -d: -f1)
+  _sep="${_sep:-0}"
+  if find_active_section "$TASK_FILE" "$_sep"; then
+    if [ "$ACTIVE_SECTION_NAME" != "$CURRENT_ACTIVE_SECTION" ]; then
+      if [ -n "$CURRENT_ACTIVE_SECTION" ] && [ "$CURRENT_ACTIVE_SECTION" != "(all tasks)" ]; then
+        log "👩🏽✅ Section complete: $CURRENT_ACTIVE_SECTION"
+      fi
+      CURRENT_ACTIVE_SECTION="$ACTIVE_SECTION_NAME"
+      if [ "$ACTIVE_SECTION_NAME" != "(all tasks)" ]; then
+        log "👩🏽📋 Now working on: $ACTIVE_SECTION_NAME"
+      fi
+    fi
+  fi
 
   # Detect newly completed tasks
   if [ "$CURRENT_DONE" -gt "$LAST_DONE_COUNT" ]; then
@@ -786,8 +1072,27 @@ while true; do
   # ── Check on the Jerrys ──
   check_parallel_workers
 
+  # ── Deploy Jerrys for pending tasks (eager — no LLM bottleneck) ──
+  if [ "$PENDING" -gt 0 ]; then
+    fill_jerry_slots
+  fi
+
   # ── Stale task detection (status-aware) ──
   if [ "$IN_PROGRESS" -gt 0 ]; then
+    # Cap check: more [!] tasks than physically possible = guaranteed stale
+    MAX_POSSIBLE=$((1 + MAX_PARALLEL))
+    if [ "$IN_PROGRESS" -gt "$MAX_POSSIBLE" ]; then
+      log "👩🏽🧮 HOLD UP! $IN_PROGRESS tasks at [!] but I only got $MAX_POSSIBLE workers (1 Tom + $MAX_PARALLEL Jerry)!"
+      log "   \"I can COUNT, children! That math don't ADD UP!\" Recovering stale tasks NOW."
+      recover_stale_tasks
+      # Re-count after recovery
+      _update_task_counts
+      IN_PROGRESS=$_COUNT_IP
+      PENDING=$_COUNT_PENDING
+      sleep "$POLL_INTERVAL"
+      continue
+    fi
+
     WORKER_ALIVE=false
     CLAUDE_PROC_ALIVE=false
     TASK_AGE=0
@@ -835,9 +1140,6 @@ while true; do
       if [ "$TASK_AGE" -gt "$MAX_TASK_AGE" ] && [ $((ALIVE_TICKS % 8)) -eq 0 ]; then
         log "👩🏽⏰ Tom's been at this for ${AGE_STR}! (over $((MAX_TASK_AGE / 60))m). He's alive... just SLOW."
       fi
-
-      # ── Try deploying Jerrys while Tom is busy ──
-      analyze_for_parallelism
 
       sleep "$POLL_INTERVAL"
       continue
@@ -918,7 +1220,11 @@ Status: $CURRENT_DONE done, $PENDING pending, $FAILED failed"
           cleanup_done_tasks
           ;;
         checking)
-          log "👩🏽⏳ Spike's still sniffing around... hold your horses, Tom."
+          if [ -n "$QA_CHECKING_TASKS" ]; then
+            log "👩🏽⏳ Spike's still sniffing around... hold your horses, Tom. ${_C_YELLOW}[QA: ${QA_CHECKING_TASKS}]${_C_RST}"
+          else
+            log "👩🏽⏳ Spike's still sniffing around... hold your horses, Tom."
+          fi
           ;;
         failed)
           log "👩🏽😤 Spike found a MESS! Tom, you better FIX that!"
@@ -939,18 +1245,50 @@ Status: $CURRENT_DONE done, $PENDING pending, $FAILED failed"
   # ── All tasks done? ──
   if [ "$PENDING" -eq 0 ] && [ "$IN_PROGRESS" -eq 0 ] && ! any_parallel_active; then
     hibernate_worker
-    if [ "$FAILED" -gt 0 ]; then
-      log "👩🏽 All tasks processed. $CURRENT_DONE done, $FAILED FAILED. Tom is resting."
-      if [ "$MERGE_MAIN" = "--main" ] && [ "$MERGED_TO_MAIN" = false ]; then
-        log "👩🏽✗ NOT merging to main — $FAILED task(s) failed. Fix them FIRST, Thomas."
+
+    # Try retrying failed tasks before declaring done
+    if [ "$FAILED" -gt 0 ] && retry_failed_tasks; then
+      sleep "$POLL_INTERVAL"
+      continue
+    fi
+
+    # Log "all done" only ONCE to prevent spam (was 973 spam lines in App B)
+    if [ "$ALL_DONE_LOGGED" = false ]; then
+      if [ "$FAILED" -gt 0 ]; then
+        log "👩🏽 All tasks processed. $CURRENT_DONE done, $FAILED FAILED (retries exhausted). Tom is resting."
+        if [ "$MERGE_MAIN" = "--main" ] && [ "$MERGED_TO_MAIN" = false ]; then
+          log "👩🏽✗ NOT merging to main — $FAILED task(s) failed. Fix them FIRST, Thomas."
+        fi
+      else
+        log "👩🏽🎉 HALLELUJAH! ALL $CURRENT_DONE tasks are DONE! Big Mamma is PROUD!"
+        log "   \"Now THAT'S how you run a house!\""
+        if [ "$MERGE_MAIN" = "--main" ] && [ "$MERGED_TO_MAIN" = false ] && [ "$PUSH_PENDING" = false ]; then
+          merge_to_main
+        fi
       fi
-    else
-      log "👩🏽🎉 HALLELUJAH! ALL $CURRENT_DONE tasks are DONE! Big Mamma is PROUD!"
-      log "   \"Now THAT'S how you run a house!\""
-      if [ "$MERGE_MAIN" = "--main" ] && [ "$MERGED_TO_MAIN" = false ] && [ "$PUSH_PENDING" = false ]; then
-        merge_to_main
+      ALL_DONE_LOGGED=true
+      IDLE_SHUTDOWN_START=$NOW
+    fi
+
+    # ── Graceful idle shutdown (no tasks for IDLE_SHUTDOWN_AFTER seconds) ──
+    if [ "$IDLE_SHUTDOWN_START" -gt 0 ]; then
+      idle_elapsed=$(( NOW - IDLE_SHUTDOWN_START ))
+      if [ "$idle_elapsed" -ge "$IDLE_SHUTDOWN_AFTER" ]; then
+        log "👩🏽💤 No new tasks for $((idle_elapsed / 60)) minutes. Big Mamma's closing up shop."
+        log "   \"The house runs itself now. Good night, y'all.\""
+        exit 0
       fi
     fi
+  else
+    # Tasks appeared — reset idle state
+    ALL_DONE_LOGGED=false
+    IDLE_SHUTDOWN_START=0
+  fi
+
+  # ── Periodic log rotation ──
+  if [ $((ALIVE_TICKS % 40)) -eq 0 ] && [ "$ALIVE_TICKS" -gt 0 ]; then
+    rotate_log_if_needed "$LOG_FILE"
+    rotate_log_if_needed "$VERBOSE_LOG"
   fi
 
   sleep "$POLL_INTERVAL"

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import flask; print\\('Flask', flask.__version__\\)\")",
+      "Bash(pip install:*)",
+      "Bash(timeout 4 python ui.py)",
+      "Bash(chmod +x \"D:/Users/lazar/Tom, Jerry, and Big Mamma/Start Dashboard.command\")",
+      "Bash(timeout 3 python ui.py)",
+      "Bash(grep -v \"^$\\\\|^[[:space:]]*$\")",
+      "Bash(bash -n \"D:/Users/lazar/Tom, Jerry, and Big Mamma/claude-supervisor.sh\")",
+      "Bash(bash -n \"D:/Users/lazar/Tom, Jerry, and Big Mamma/claude-worker.sh\")",
+      "Bash(bash -n \"D:/Users/lazar/Tom, Jerry, and Big Mamma/claude-qa.sh\")",
+      "Bash(bash -n \"D:/Users/lazar/Tom, Jerry, and Big Mamma/claude-start.sh\")"
+    ]
+  }
+}

@@ -17,13 +17,15 @@ TASK_FILE="${1:-TASKS.md}"
 LOG_FILE="claude-qa.log"
 STATUS_FILE=".qa-status"
 WORKER_STATUS_FILE=".worker-status"
-MAX_PARALLEL=2
+MAX_PARALLEL=$(cat .house-jerries 2>/dev/null || echo 2)
 POLL_INTERVAL=20
 LOCK_DIR=".tasks.lock"
 MAX_FIX_RETRIES=3
 FIX_ATTEMPT=0
 LAST_CHECKED_DONE=0
 QA_ERRORS=""
+QA_DEBOUNCE=30             # wait this many seconds after last completion before QA
+QA_PENDING_SINCE=0         # timestamp when we first noticed new completions
 
 if [ ! -f "$TASK_FILE" ]; then
   echo "ERROR: Task file '$TASK_FILE' not found. Spike has nothing to sniff!"
@@ -42,14 +44,25 @@ write_qa_status() {
   local state="$1"
   local errors="${2:-}"
   local validated_done="${3:-}"
+  local checking_tasks="${4:-}"
   cat > "$STATUS_FILE" <<EOF
 STATE=$state
 QA_PID=$$
 LAST_CHECK=$(date +%s)
 FIX_ATTEMPT=$FIX_ATTEMPT
 VALIDATED_DONE=$validated_done
+CHECKING_TASKS=$checking_tasks
 ERRORS=$errors
 EOF
+}
+
+get_recent_done_tasks() {
+  # Return the descriptions of completed tasks (last N that Spike hasn't checked yet)
+  # Uses LAST_CHECKED_DONE and CURRENT_DONE to find the new ones
+  local all_done
+  all_done=$(grep '^\[x\] ' "$TASK_FILE" 2>/dev/null | sed 's/^\[x\] //' | tail -n "$((CURRENT_DONE - LAST_CHECKED_DONE))")
+  # Truncate each line and join with " | "
+  echo "$all_done" | head -5 | cut -c1-60 | paste -sd'|' -
 }
 
 count_done() {
@@ -154,7 +167,8 @@ cleanup_qa() {
   rm -f "$STATUS_FILE"
 }
 
-trap cleanup_qa EXIT INT TERM
+trap cleanup_qa EXIT
+trap 'cleanup_qa; exit 0' INT TERM
 
 # ─── Startup ─────────────────────────────────────────────────────────────────
 
@@ -172,12 +186,31 @@ log "Initial done count: $LAST_CHECKED_DONE"
 
 while true; do
   CURRENT_DONE=$(count_done)
+  NOW_TS=$(date +%s)
 
   if [ "$CURRENT_DONE" -gt "$LAST_CHECKED_DONE" ]; then
-    NEW_COMPLETIONS=$((CURRENT_DONE - LAST_CHECKED_DONE))
-    log "🐶👀 Spike's ears perk up! $NEW_COMPLETIONS new completed task(s). Time to inspect!"
+    # New completions detected — start/reset the debounce timer
+    if [ "$QA_PENDING_SINCE" -eq 0 ]; then
+      NEW_COMPLETIONS=$((CURRENT_DONE - LAST_CHECKED_DONE))
+      log "🐶👀 Spike's ears perk up! $NEW_COMPLETIONS new completed task(s). Time to inspect!"
+      QA_PENDING_SINCE=$NOW_TS
+    fi
 
-    # Wait for workers to finish current task to avoid checking intermediate state
+    # Debounce: wait for QA_DEBOUNCE seconds of stability before checking
+    # This prevents running QA on every single task during rapid sequential execution
+    DEBOUNCE_ELAPSED=$((NOW_TS - QA_PENDING_SINCE))
+    if [ "$DEBOUNCE_ELAPSED" -lt "$QA_DEBOUNCE" ]; then
+      # Check if more tasks are still completing (reset timer)
+      sleep "$POLL_INTERVAL"
+      NEW_DONE=$(count_done)
+      if [ "$NEW_DONE" -gt "$CURRENT_DONE" ]; then
+        QA_PENDING_SINCE=$NOW_TS  # reset debounce — more tasks completing
+        log "🐶⏳ More tasks finishing... Spike resets his sniff timer."
+      fi
+      continue
+    fi
+
+    # Debounce expired — also wait for workers to finish current task
     WAIT_CYCLES=0
     while is_any_worker_active && [ "$WAIT_CYCLES" -lt 40 ]; do
       if [ "$WAIT_CYCLES" -eq 0 ]; then
@@ -187,7 +220,12 @@ while true; do
       WAIT_CYCLES=$((WAIT_CYCLES + 1))
     done
 
-    write_qa_status "checking"
+    # Re-read done count after waiting (more may have completed during debounce)
+    CURRENT_DONE=$(count_done)
+
+    CHECKING_DESCS=$(get_recent_done_tasks)
+    write_qa_status "checking" "" "" "$CHECKING_DESCS"
+    QA_PENDING_SINCE=0
 
     if run_checks; then
       log "🐶😊 *happy bark* ALL CLEAR! Spike approves! ($CURRENT_DONE task(s) validated)"

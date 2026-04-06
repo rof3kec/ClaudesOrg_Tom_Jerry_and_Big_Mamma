@@ -1,0 +1,15 @@
+Your request appears to be incomplete — you wrote "Add the following keys to each file" but didn't list the actual keys to add. There are also no existing team components or `t('team.*')` usages in the codebase to infer from.
+
+Could you provide the specific translation keys and their values that you'd like added?
+Added `"team"` translations to all 5 locale files (en, sr, de, es, it). Each file now has these keys:
+
+- **title/subtitle** — page header
+- **inviteMember, inviteSubtitle, emailLabel, emailPlaceholder, sendInvite, sending** — invite flow
+- **inviteSuccess, inviteError, alreadyMember** — invite feedback
+- **removeMember, removeConfirm, removeSuccess, removeError, cannotRemoveSelf** — member removal
+- **changeRole, roleUpdated, roleUpdateError, role** — role management
+- **roles.couple, roles.coordinator** — role names
+- **roleDescriptions.couple, roleDescriptions.coordinator** — role explanations
+- **members, memberCount_one, memberCount_other** — member list with pluralization
+- **you, owner, joined, pending** — member status labels
+- **noMembers, emptyState, emptyStateDescription** — empty state
