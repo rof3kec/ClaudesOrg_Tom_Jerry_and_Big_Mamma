@@ -48,7 +48,7 @@ BRANCH=""
 AUTO_MODE="--auto"
 MERGE_MAIN=""
 LOCATION=""
-JERRIES=2
+JERRIES=""
 LOCK_FILE=".claude-start.lock"
 
 # ─── Parse args ──────────────────────────────────────────────────────────────
@@ -244,6 +244,9 @@ fi
 
 # ─── Validate Jerry count ────────────────────────────────────────────────────
 
+if [ -z "$JERRIES" ]; then
+  fail "ERROR: --jerries is required.  Usage: --jerries <count>"
+fi
 if ! [[ "$JERRIES" =~ ^[0-9]+$ ]] || [ "$JERRIES" -lt 0 ]; then
   fail "ERROR: --jerries must be a non-negative integer (got: $JERRIES)"
 fi

@@ -7,7 +7,8 @@ This project uses an automated task processing system. Tasks are defined in `TAS
 ```
 [ ] Pending     — waiting to be picked up
 [!] In Progress — a worker is actively executing this (DO NOT edit)
-[x] Completed   — finished successfully
+[q] Ready for QA — work done, waiting for Spike to validate (DO NOT edit)
+[x] Completed   — validated by Spike and finished successfully
 [-] Failed      — execution failed (check logs, rewrite, change back to [ ] to retry)
 ```
 
@@ -45,10 +46,10 @@ This project uses an automated task processing system. Tasks are defined in `TAS
 
 1. The primary worker scans `TASKS.md` for the first `[ ]` line
 2. Marks it `[!]` and executes it via Claude Code
-3. On success: marks `[x]` — on failure: marks `[-]`
+3. On success: marks `[q]` (ready for QA) — on failure: marks `[-]`
 4. Moves to the next `[ ]` task
 5. Independent tasks may be executed in parallel by additional workers in isolated git worktrees
-6. A QA worker validates completed tasks (build, lint, type-check) and injects fix tasks if needed
+6. Spike (QA worker) validates `[q]` tasks (build, lint, type-check) — on pass: promotes to `[x]`, on fail: injects fix tasks
 7. A supervisor commits and pushes validated work, then cleans completed tasks from the file
 
 ## Adding Tasks While Running
