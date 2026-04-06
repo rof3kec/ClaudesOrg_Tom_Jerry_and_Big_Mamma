@@ -41,6 +41,17 @@ LOG_MAP = {
 
 INSTANCES_FILE = SCRIPT_DIR / ".house-instances"
 
+SPECIALIZATIONS = [
+    {"id": "fullstack",  "label": "Fullstack",      "desc": "General-purpose worker"},
+    {"id": "architect",  "label": "Architect",       "desc": "System design & architecture"},
+    {"id": "backend",    "label": "Backend",         "desc": "APIs, services & server logic"},
+    {"id": "frontend",   "label": "Frontend",        "desc": "UI, components & styling"},
+    {"id": "data",       "label": "Data",            "desc": "Data models, DB & migrations"},
+    {"id": "platform",   "label": "Platform",        "desc": "CI/CD, infra & deployment"},
+    {"id": "qa",         "label": "QA",              "desc": "Testing & quality assurance"},
+    {"id": "design",     "label": "Design System",   "desc": "Design tokens & UI patterns"},
+]
+
 app = Flask(__name__)
 
 # ── Shutdown-on-close timer ────────────────────────────────────────────────────
@@ -283,8 +294,8 @@ def read_kv(path):
 
 def parse_tasks(filepath):
     tasks = []
-    prefixes = [("[ ] ", "pending"), ("[x] ", "done"),
-                ("[!] ", "in_progress"), ("[-] ", "failed")]
+    prefixes = [("[ ] ", "pending"), ("[q] ", "qa"),
+                ("[x] ", "done"), ("[!] ", "in_progress"), ("[-] ", "failed")]
     try:
         with open(filepath, encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f, 1):
@@ -342,14 +353,26 @@ def get_agents(loc):
         jerry_count = int(Path(jerries_file).read_text().strip())
     except (OSError, ValueError):
         pass
+
+    # Read Jerry specializations
+    jerry_specs = {}
+    specs_file = os.path.join(loc, ".house-jerry-specs.json")
+    try:
+        jerry_specs = json.loads(Path(specs_file).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+
     for i in range(jerry_count):
         ps = read_kv(os.path.join(loc, f".parallel-status-{i}"))
         jerry_state = _live_state(ps)
+        spec = jerry_specs.get(str(i), "fullstack")
+        spec_label = next((s["label"] for s in SPECIALIZATIONS if s["id"] == spec), "Fullstack")
         agents.append({
             "id": f"jerry_{i}", "name": f"Jerry #{i}",
-            "role": "Parallel Worker",
+            "role": f"Parallel Worker · {spec_label}",
             "state": jerry_state,
             "task": ps.get("TASK_DESC", "") if jerry_state != "offline" else "",
+            "spec": spec,
         })
 
     # Spike
@@ -448,6 +471,7 @@ def api_overview():
             "name": loc["name"], "path": p, "running": running,
             "pending": sum(1 for t in tasks if t["status"] == "pending"),
             "in_progress": sum(1 for t in tasks if t["status"] == "in_progress"),
+            "qa": sum(1 for t in tasks if t["status"] == "qa"),
             "done": sum(1 for t in tasks if t["status"] == "done"),
             "failed": sum(1 for t in tasks if t["status"] == "failed"),
         })
@@ -549,6 +573,39 @@ def api_branch():
         return jsonify({"branch": branch, "protected": branch in ("main", "master")})
     except Exception:
         return jsonify({"branch": "", "protected": False})
+
+
+@app.route("/api/specializations")
+def api_specializations():
+    return jsonify(SPECIALIZATIONS)
+
+
+@app.route("/api/jerry-specs")
+def api_get_jerry_specs():
+    path = request.args.get("path", "")
+    if not path or not os.path.isdir(path):
+        return jsonify({"error": "Invalid path"}), 400
+    specs_file = os.path.join(path, ".house-jerry-specs.json")
+    try:
+        specs = json.loads(Path(specs_file).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        specs = {}
+    return jsonify(specs)
+
+
+@app.route("/api/jerry-specs", methods=["PUT"])
+def api_set_jerry_specs():
+    data = request.json or {}
+    path = data.get("path", "")
+    specs = data.get("specs", {})
+    if not path or not os.path.isdir(path):
+        return jsonify({"error": "Invalid path"}), 400
+    specs_file = os.path.join(path, ".house-jerry-specs.json")
+    try:
+        Path(specs_file).write_text(json.dumps(specs, indent=2), encoding="utf-8")
+        return jsonify({"ok": True})
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/start", methods=["POST"])

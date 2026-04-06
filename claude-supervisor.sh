@@ -53,6 +53,7 @@ QA_STATE=""
 QA_CHECKING_TASKS=""
 
 # Jerry (parallel workers) — N slots (configured via --jerries flag, eagerly filled)
+JERRY_SPECS_FILE=".house-jerry-specs.json"
 P_PIDS=()
 P_WORKTREES=()
 P_BRANCHES=()
@@ -204,13 +205,14 @@ unlock_tasks() {
 
 _update_task_counts() {
   # Read all counts in one pass to minimize fork overhead
-  _COUNT_DONE=0 _COUNT_IP=0 _COUNT_PENDING=0 _COUNT_FAILED=0
+  _COUNT_DONE=0 _COUNT_IP=0 _COUNT_PENDING=0 _COUNT_FAILED=0 _COUNT_QA=0
   while IFS= read -r line; do
     case "$line" in
       "[x] "*) _COUNT_DONE=$((_COUNT_DONE + 1)) ;;
       "[!] "*) _COUNT_IP=$((_COUNT_IP + 1)) ;;
       "[ ] "*) _COUNT_PENDING=$((_COUNT_PENDING + 1)) ;;
       "[-] "*) _COUNT_FAILED=$((_COUNT_FAILED + 1)) ;;
+      "[q] "*) _COUNT_QA=$((_COUNT_QA + 1)) ;;
     esac
   done < "$TASK_FILE" 2>/dev/null
 }
@@ -233,6 +235,11 @@ count_pending() {
 count_failed() {
   _update_task_counts
   echo "$_COUNT_FAILED"
+}
+
+count_qa_ready() {
+  _update_task_counts
+  echo "$_COUNT_QA"
 }
 
 has_changes() {
@@ -285,6 +292,76 @@ find_free_slot() {
 any_parallel_active() {
   for ((i=0; i<MAX_PARALLEL; i++)); do
     [ "${P_ACTIVE[$i]}" = true ] && return 0
+  done
+  return 1
+}
+
+# ─── Jerry Specializations ─────────────────────────────────────────────────
+
+# Read specialization for a Jerry slot (returns "fullstack" if not set)
+read_jerry_spec() {
+  local slot="$1"
+  if [ ! -f "$JERRY_SPECS_FILE" ]; then
+    echo "fullstack"
+    return
+  fi
+  local spec
+  spec=$(grep -o "\"$slot\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$JERRY_SPECS_FILE" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
+  echo "${spec:-fullstack}"
+}
+
+# Get the role prompt for a specialization
+get_spec_prompt() {
+  local spec="$1"
+  case "$spec" in
+    architect)
+      echo "ROLE: You are a System Architect. Focus on high-level design, project structure, module organization, dependency management, and architectural patterns. Prioritize clean abstractions, separation of concerns, and scalable solutions." ;;
+    backend)
+      echo "ROLE: You are a Backend Engineer. Focus on APIs, server logic, services, request handling, middleware, authentication, and business logic. Prioritize correctness, performance, and clean interfaces." ;;
+    frontend)
+      echo "ROLE: You are a Frontend Engineer. Focus on UI components, styling, layout, user interactions, accessibility, and responsive design. Prioritize user experience and visual polish." ;;
+    data)
+      echo "ROLE: You are a Data Layer Engineer. Focus on data models, database schemas, migrations, ORMs, queries, caching, and data integrity. Prioritize data consistency and efficient access patterns." ;;
+    platform)
+      echo "ROLE: You are a Platform Engineer. Focus on CI/CD pipelines, Docker, infrastructure, deployment, monitoring, and DevOps. Prioritize reliability, automation, and operational excellence." ;;
+    qa)
+      echo "ROLE: You are a QA Engineer. Focus on writing tests, test automation, test coverage, edge cases, and quality assurance. Prioritize thorough testing and catching bugs early." ;;
+    design)
+      echo "ROLE: You are a Design System Engineer. Focus on design tokens, reusable UI components, theming, typography, color systems, and consistent visual language. Prioritize consistency and reusability." ;;
+    *)
+      echo "" ;;  # fullstack — no special role prompt
+  esac
+}
+
+# Get keywords for matching tasks to specializations
+get_spec_keywords() {
+  local spec="$1"
+  case "$spec" in
+    architect) echo "architect design structure refactor pattern module dependency organize" ;;
+    backend) echo "api server endpoint route handler middleware auth service backend database query" ;;
+    frontend) echo "ui component style css html layout render view page frontend react vue" ;;
+    data) echo "data model schema migration database db query orm table column index cache" ;;
+    platform) echo "ci cd pipeline docker deploy infra terraform kubernetes helm monitoring" ;;
+    qa) echo "test spec assert coverage unit integration e2e mock fixture quality" ;;
+    design) echo "design token theme color typography font spacing component library system" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Check if a task description matches a specialization's keywords
+# Returns 0 if match found, 1 otherwise
+task_matches_spec() {
+  local task_desc="$1"
+  local spec="$2"
+  local keywords
+  keywords=$(get_spec_keywords "$spec")
+  [ -z "$keywords" ] && return 1  # fullstack matches nothing specifically
+  local task_lower
+  task_lower=$(echo "$task_desc" | tr '[:upper:]' '[:lower:]')
+  for kw in $keywords; do
+    if echo "$task_lower" | grep -qiw "$kw"; then
+      return 0
+    fi
   done
   return 1
 }
@@ -639,10 +716,11 @@ fill_jerry_slots() {
     skip_first=0  # Tom is busy — Jerry can take everything
   fi
 
-  local spawned=0
+  # Collect candidate tasks (with continuation lines)
+  local -a CAND_LINES=()
+  local -a CAND_DESCS=()
   local skipped=0
   while IFS= read -r candidate; do
-    [ "$free_slots" -le 0 ] && break
     local line_num
     line_num=$(echo "$candidate" | cut -d: -f1)
     [ "$line_num" -lt "$ACTIVE_SECTION_START" ] && continue
@@ -654,9 +732,6 @@ fill_jerry_slots() {
       continue
     fi
 
-    local slot
-    slot=$(find_free_slot) || break
-
     local task_desc
     task_desc=$(echo "$candidate" | sed 's/^[0-9]*:\[ \] //')
 
@@ -665,7 +740,7 @@ fill_jerry_slots() {
     while [ "$_cnext" -le "$ACTIVE_SECTION_END" ]; do
       local _ccont
       _ccont=$(sed -n "${_cnext}p" "$TASK_FILE")
-      if [ -z "$_ccont" ] || echo "$_ccont" | grep -qE '^\[[ xX!-]\] |^#+ |^_{5,}'; then
+      if [ -z "$_ccont" ] || echo "$_ccont" | grep -qE '^\[[ xXqQ!-]\] |^#+ |^_{5,}'; then
         break
       fi
       task_desc="${task_desc}
@@ -678,15 +753,57 @@ ${_ccont}"
       continue
     fi
 
-    spawn_parallel_worker "$slot" "$line_num" "$task_desc"
-    # Only count as deployed if P_ACTIVE was actually set (spawn can fail on verify/worktree)
-    if [ "${P_ACTIVE[$slot]}" = true ]; then
-      spawned=$((spawned + 1))
-      free_slots=$((free_slots - 1))
-    else
-      log "🐭⚠ Jerry #$slot failed to launch for line $line_num — slot still free, trying next task"
-    fi
+    CAND_LINES+=("$line_num")
+    CAND_DESCS+=("$task_desc")
   done < <(grep -n '^\[ \] ' "$TASK_FILE" 2>/dev/null || true)
+
+  [ ${#CAND_LINES[@]} -eq 0 ] && { PARALLEL_LAST_ANALYSIS=$now_ts; return 1; }
+
+  # Track which tasks have been assigned
+  local -a task_used=()
+  for ((i=0; i<${#CAND_LINES[@]}; i++)); do task_used+=(false); done
+
+  local spawned=0
+
+  # Pass 1: Match specialized Jerrys to tasks matching their expertise
+  for ((si=0; si<MAX_PARALLEL; si++)); do
+    [ "${P_ACTIVE[$si]}" = true ] && continue
+    local spec
+    spec=$(read_jerry_spec "$si")
+    [ "$spec" = "fullstack" ] && continue
+
+    for ((ti=0; ti<${#CAND_LINES[@]}; ti++)); do
+      [ "${task_used[$ti]}" = true ] && continue
+      if task_matches_spec "${CAND_DESCS[$ti]}" "$spec"; then
+        spawn_parallel_worker "$si" "${CAND_LINES[$ti]}" "${CAND_DESCS[$ti]}"
+        if [ "${P_ACTIVE[$si]}" = true ]; then
+          task_used[$ti]=true
+          spawned=$((spawned + 1))
+          log "   👩🏽🎯 Matched Jerry #$si ($spec) to task #${CAND_LINES[$ti]}"
+        fi
+        break
+      fi
+    done
+  done
+
+  # Pass 2: Fill remaining free slots with any unassigned task
+  for ((si=0; si<MAX_PARALLEL; si++)); do
+    [ "${P_ACTIVE[$si]}" = true ] && continue
+
+    for ((ti=0; ti<${#CAND_LINES[@]}; ti++)); do
+      [ "${task_used[$ti]}" = true ] && continue
+
+      spawn_parallel_worker "$si" "${CAND_LINES[$ti]}" "${CAND_DESCS[$ti]}"
+      if [ "${P_ACTIVE[$si]}" = true ]; then
+        task_used[$ti]=true
+        spawned=$((spawned + 1))
+      else
+        log "🐭⚠ Jerry #$si failed to launch for line ${CAND_LINES[$ti]} — slot still free, trying next task"
+        continue
+      fi
+      break
+    done
+  done
 
   PARALLEL_LAST_ANALYSIS=$now_ts
 
@@ -738,6 +855,10 @@ spawn_parallel_worker() {
     return
   fi
 
+  # Read specialization for this slot
+  local jerry_spec
+  jerry_spec=$(read_jerry_spec "$slot")
+
   # Write Jerry's status (flatten desc for KEY=VALUE format)
   local safe_desc="${task_desc//$'\n'/ }"
   cat > "$status_file" <<EOF
@@ -745,6 +866,7 @@ STATE=running
 SLOT=$slot
 TASK_LINE=$task_line
 TASK_DESC=$safe_desc
+SPEC=$jerry_spec
 BRANCH=$branch_name
 WORKTREE=$worktree_dir
 STARTED=$(date +%s)
@@ -761,6 +883,16 @@ EOF
     JERRY_CONTEXT="
 
 Project context: $MAMMA_INSTRUCTIONS"
+  fi
+
+  # Add specialization role prompt
+  local spec_prompt
+  spec_prompt=$(get_spec_prompt "$jerry_spec")
+  if [ -n "$spec_prompt" ]; then
+    JERRY_CONTEXT="${JERRY_CONTEXT}
+
+$spec_prompt"
+    log "   🐭🎓 Jerry #$slot role: $jerry_spec"
   fi
 
   # Spawn Claude in Jerry's hideout (worktree)
@@ -841,12 +973,12 @@ merge_parallel_worker() {
   if git merge "$branch" --no-edit >> "$VERBOSE_LOG" 2>&1; then
     log "🐭✓ Jerry #$slot's work merged clean! That mouse is GOOD."
 
-    # Mark task as done
+    # Mark task as ready for QA (Spike will promote to [x])
     lock_tasks
     if [[ "$OSTYPE" == "darwin"* ]]; then
-      sed -i '' "${task_line}s/^\[!\] /[x] /" "$TASK_FILE"
+      sed -i '' "${task_line}s/^\[!\] /[q] /" "$TASK_FILE"
     else
-      sed -i "${task_line}s/^\[!\] /[x] /" "$TASK_FILE"
+      sed -i "${task_line}s/^\[!\] /[q] /" "$TASK_FILE"
     fi
     unlock_tasks
 
@@ -972,6 +1104,7 @@ fi
 # ─── State ───────────────────────────────────────────────────────────────────
 
 LAST_DONE_COUNT=$(count_done)
+LAST_QA_COUNT=$(count_qa_ready)
 LAST_CHANGE_TIME=0
 PENDING_COMMIT=false
 CURRENT_ACTIVE_SECTION=""
@@ -1001,9 +1134,16 @@ log "Auto mode: ${AUTO_MODE:-off}"
 log "CLAUDE.md: $([ -n "$CLAUDE_MD_CONTENT" ] && echo 'loaded ✓' || echo 'not found')"
 log "Mamma Instructions: $([ -n "$MAMMA_INSTRUCTIONS" ] && echo 'loaded ✓' || echo 'none')"
 log "Jerry slots: $MAX_PARALLEL"
+# Log Jerry specializations
+if [ -f "$JERRY_SPECS_FILE" ]; then
+  for ((_si=0; _si<MAX_PARALLEL; _si++)); do
+    _spec=$(read_jerry_spec "$_si")
+    [ "$_spec" != "fullstack" ] && log "   Jerry #$_si: $_spec"
+  done
+fi
 log "Poll interval: ${POLL_INTERVAL}s"
 log "Commit debounce: ${COMMIT_BATCH_WAIT}s"
-log "Roll call: $(count_done) done, $(count_in_progress) in-progress, $(count_pending) pending, $(count_failed) failed"
+log "Roll call: $(count_done) done, $(count_qa_ready) qa-ready, $(count_in_progress) in-progress, $(count_pending) pending, $(count_failed) failed"
 log "\"Now let's get this house in ORDER.\""
 
 # ─── Startup recovery: reset orphaned [!] tasks ─────────────────────────────
@@ -1030,6 +1170,7 @@ while true; do
   IN_PROGRESS=$_COUNT_IP
   PENDING=$_COUNT_PENDING
   FAILED=$_COUNT_FAILED
+  QA_READY=$_COUNT_QA
   NOW=$(date +%s)
 
   # Track active section transitions (section-aware delegation)
@@ -1047,10 +1188,21 @@ while true; do
     fi
   fi
 
-  # Detect newly completed tasks
+  # Detect tasks newly ready for QA (worker finished → [q])
+  if [ "$QA_READY" -gt "$LAST_QA_COUNT" ]; then
+    NEW_QA=$((QA_READY - LAST_QA_COUNT))
+    log "👩🏽😊 Well well! $NEW_QA task(s) ready for Spike! (total: $QA_READY). Now let's see if they PASS."
+    LAST_QA_COUNT=$QA_READY
+    LAST_CHANGE_TIME=$NOW
+    PENDING_COMMIT=true
+  elif [ "$QA_READY" -lt "$LAST_QA_COUNT" ]; then
+    LAST_QA_COUNT=$QA_READY  # Spike promoted some — sync counter
+  fi
+
+  # Detect newly validated tasks (Spike promoted [q] → [x])
   if [ "$CURRENT_DONE" -gt "$LAST_DONE_COUNT" ]; then
-    NEW_COMPLETIONS=$((CURRENT_DONE - LAST_DONE_COUNT))
-    log "👩🏽😊 Well well! $NEW_COMPLETIONS task(s) DONE! (total: $CURRENT_DONE). That's what I like to see!"
+    NEW_VALIDATED=$((CURRENT_DONE - LAST_DONE_COUNT))
+    log "👩🏽😊 Spike APPROVED $NEW_VALIDATED task(s)! (total: $CURRENT_DONE). That's what I like to see!"
     LAST_DONE_COUNT=$CURRENT_DONE
     LAST_CHANGE_TIME=$NOW
     PENDING_COMMIT=true
@@ -1196,7 +1348,7 @@ while true; do
 Tasks done:
 $DONE_SUMMARY
 
-Status: $CURRENT_DONE done, $PENDING pending, $FAILED failed"
+Status: $CURRENT_DONE done, $QA_READY qa-ready, $PENDING pending, $FAILED failed"
 
       if git commit -m "$COMMIT_MSG" >> "$VERBOSE_LOG" 2>&1; then
         log "👩🏽✓ Committed locally. Mm-hmm."
@@ -1245,6 +1397,31 @@ Status: $CURRENT_DONE done, $PENDING pending, $FAILED failed"
   # ── All tasks done? ──
   if [ "$PENDING" -eq 0 ] && [ "$IN_PROGRESS" -eq 0 ] && ! any_parallel_active; then
     hibernate_worker
+
+    # Wait for Spike to validate [q] tasks before declaring done
+    if [ "$QA_READY" -gt 0 ]; then
+      if read_qa_status; then
+        # Spike is on duty — let him handle it
+        if [ "$ALL_DONE_LOGGED" = false ]; then
+          log "👩🏽⏳ $QA_READY task(s) awaiting Spike's inspection. Hold tight, y'all."
+          ALL_DONE_LOGGED=true
+        fi
+      else
+        # Spike's not around — auto-promote [q] → [x]
+        log "👩🏽⚠ Spike's NOT around! Auto-approving $QA_READY task(s). Lord help us."
+        lock_tasks
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+          sed -i '' 's/^\[q\] /[x] /' "$TASK_FILE"
+        else
+          sed -i 's/^\[q\] /[x] /' "$TASK_FILE"
+        fi
+        unlock_tasks
+        LAST_QA_COUNT=0
+        ALL_DONE_LOGGED=false
+      fi
+      sleep "$POLL_INTERVAL"
+      continue
+    fi
 
     # Try retrying failed tasks before declaring done
     if [ "$FAILED" -gt 0 ] && retry_failed_tasks; then
