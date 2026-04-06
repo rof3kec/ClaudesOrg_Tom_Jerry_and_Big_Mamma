@@ -30,7 +30,6 @@ MAX_PARALLEL=$(cat .house-jerries 2>/dev/null || echo 2)
 POLL_INTERVAL=20
 MAX_FIX_RETRIES=3
 FIX_ATTEMPT=0
-LAST_CHECKED_DONE=0
 QA_ERRORS=""
 QA_DEBOUNCE=30             # wait this many seconds after last completion before QA
 QA_PENDING_SINCE=0         # timestamp when we first noticed new completions
@@ -154,7 +153,7 @@ trap 'cleanup_qa; exit 0' INT TERM
 
 # ─── Startup ─────────────────────────────────────────────────────────────────
 
-LAST_CHECKED_QA=$(count_qa_ready)
+LAST_CHECKED_QA=0
 write_qa_status "idle"
 
 house_log "╔═══════════════════════════════════════════════════════╗"
@@ -259,6 +258,12 @@ while true; do
         # (fix task will become [q], bumping count above LAST_CHECKED_QA)
         LAST_CHECKED_QA=$CURRENT_QA
       fi
+    fi
+  else
+    # Sync LAST_CHECKED_QA downward if [q] count dropped externally
+    # (e.g., Big Mamma auto-promoted during a Spike restart window)
+    if [ "$CURRENT_QA" -lt "$LAST_CHECKED_QA" ]; then
+      LAST_CHECKED_QA=$CURRENT_QA
     fi
   fi
 
