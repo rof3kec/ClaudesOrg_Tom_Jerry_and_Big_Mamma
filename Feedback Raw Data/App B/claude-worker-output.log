@@ -1,0 +1,36 @@
+
+one. Both the create (line 94) and update (line 126) schemas now use `z.string()` instead of `z.enum(['partner1', 'partner2', 'coordinator'])` for `assignedTo`, allowing team meDone. Added `sendTeamMemberTasksEmail` at the end of `wedding-backend/src/services/email.service.ts` (line ~458). The function:
+
+- **Interface**: `TeamMemberTasksParams` with `to`, `memberName`, `tasks` (array of `{ title }`), `partner1`, `partner2`, and optional `weddingDate`
+- **Subject**: `"Your tasks for [partner1] & [partner2]'s wedding"`
+- **Header**: Dark gradient (`#1a1a2e → #2d2d44`) with partner names in gold uppercase, "Your Tasks" heading, gold divider, and ceremony date (if provided)
+- **Body**: Greeting with member name, intro paragraph, bulleted task list in a table with `#f0ebe0` row borders
+- **Footer**: Ivory background with partner names and "Perfect Day" branding
+
+Matches the existing email design system exactly.
+Clean compile. Here's a summary of the changes:
+
+**`wedding-web/src/lib/api.ts`:**
+- Added `user?: { id, firstName, lastName, photoUrl }` to `WeddingMember` interface
+- Added `members?: WeddingMember[]` to `Wedding` interface
+
+**`wedding-web/src/app/dashboard/tasks/page.tsx`:**
+- Replaced hardcoded `partner1`/`partner2`/`coordinator` assignment with dynamic `wedding.members` list
+- `MEMBER_COLORS` palette (6 colors) cycles across members by index
+- Filter bar now shows actual member names from `wedding.members` data
+- Assignment dropdown renders all team members with role-based icons (`User` for COUPLE, `UserCog` for COORDINATOR)
+- `assignedTo` now stores the `WeddingMember.id` instead of magic strings
+- Removed the `AssignFilter` type alias (no longer needed)
+
+The backend already accepts any string for `assignedTo` (via `z.string().optional().nullable()`), so no backend changes are needed. Existing tasks with old `"partner1"`/`"partner2"`/`"coordinator"` values will show as unassigned until re-assigned to actual members.
+Clean compile. Here's what was added to `wedding-backend/src/routes/team-members.routes.ts`:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/:weddingId/team` | GET | List all team members with user details |
+| `/:weddingId/team` | POST | Add a member by email + role (`COUPLE`/`COORDINATOR`) |
+| `/:weddingId/team/:memberId` | PATCH | Update a member's role |
+| `/:weddingId/team/:memberId` | DELETE | Remove a member |
+
+All four use `authMiddleware` + `weddingMemberMiddleware`, match the frontend API client's expected paths and response shapes (`{ members: TeamMember[] }`, `{ member: TeamMember }`, `{ success: true }`), and operate on the existing `WeddingMember` Prisma model. The existing notify endpoint is preserved unchanged.
+ave `/team` routes yet — you'll need to add those to `wedding-backend/src/routes/` to match.

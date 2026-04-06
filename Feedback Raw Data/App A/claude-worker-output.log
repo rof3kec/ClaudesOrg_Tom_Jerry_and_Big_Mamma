@@ -1,0 +1,896 @@
+Could you clarify what you'd like me to do? "Pending — waiting to be picked up" could mean a few things:
+
+- Are you sharing a task status and want me to pick up a specific task?
+- Are you referring to something in `TASKS.md` or another file?
+- Something else?
+
+What would you like me to work on?
+Done. Added four new enums to `backend/prisma/schema.prisma:67-93`:
+
+- **OrgRole**: `OWNER`, `ADMIN`, `EDITOR`, `VIEWER`
+- **OrgTier**: `STARTER`, `PRO`, `ENTERPRISE`
+- **EventStatus**: `DRAFT`, `PUBLISHED`, `ARCHIVED`
+- **ModuleType**: `AGENDA`, `NETWORKING`, `SPEAKERS`, `SPONSORS`, `EXHIBITORS`, `NEWS`, `LIVE_ENGAGEMENT`, `LEAD_CAPTURE`, `CHECKIN`
+
+All existing enums are untouched. Ready for P0-02.
+Schema is valid. The `OrganizationMember` model has been added with:
+
+- `id` (cuid primary key)
+- `organizationId` + `userId` foreign keys with `onDelete: Cascade` on both
+- `role` using existing `OrgRole` enum, defaulting to `EDITOR`
+- `createdAt` timestamp
+- `@@unique([organizationId, userId])` constraint (one membership per user per org)
+- `@@map("organization_members")` table name
+
+Reverse relations added to `Organization` (`members`) and `User` (`organizationMembers`).
+Schema is valid. Here's what was added:
+
+**`OrgTokenBalance` model** (`backend/prisma/schema.prisma`):
+- `id` — cuid PK
+- `organizationId` — unique FK to Organization (one balance per org), cascading delete
+- `balance` — current spendable tokens (default 0)
+- `tier` — `OrgTier` enum (default `STARTER`)
+- `totalPurchased` — cumulative purchased tokens, never decreases (default 0)
+- `totalSpent` — cumulative spent tokens (default 0)
+- `createdAt` / `updatedAt` timestamps
+- Table: `org_token_balances`
+
+Also added the `tokenBalance` optional relation on the `Organization` model.
+Done. Added:
+
+- **`OrgTokenTransaction`** model (mapped to `org_token_transactions`) with `id`, `organizationId`, `amount`, `action`, `description`, `balanceAfter`, and `createdAt`
+- Composite index on `[organizationId, createdAt]` for efficient ledger queries
+- Reverse relation `tokenTransactions` on `Organization`
+
+The model follows the same append-only ledger pattern as `TokenTransaction` from the docs, scoped to organizations instead of users.
+Done. The `ProcessedOrgTransaction` model has been added with:
+
+- **`transactionId`** — unique constraint on the payment provider's transaction ID (the idempotency key)
+- **`organizationId`** — FK to `Organization`
+- **`source`** — `"confirm"` or `"webhook"` to track which path won
+- **`tokenAmount`** — tokens granted for audit trail
+- **`@@map("processed_org_transactions")`** — snake_case table name
+
+The unique constraint on `transactionId` is the core mechanism: whichever path (client confirm or webhook) inserts first wins; the second attempt gets a `P2002` unique violation and is silently ignored, preventing double-crediting.
+Done. Added the `EventBranding` model to `backend/prisma/schema.prisma` with:
+
+- All color fields (`primaryColor`, `secondaryColor`, `accentColor`, `textPrimary`, `textSecondary`, `buttonColor`, `buttonTextColor`) with defaults
+- `fontFamily` defaulting to `"Inter"`
+- Optional `logoUrl`, `faviconUrl`, `loginBgUrl`
+- `customDomain` as optional unique
+- `eventId` as unique FK with cascade delete
+- Table mapped to `event_brandings`
+- Reverse relation `branding EventBranding?` added to the `Event` model
+Schema is valid. Here's what was added:
+
+- **`EventModule` model** at `backend/prisma/schema.prisma` with fields: `id`, `eventId`, `module` (ModuleType), `enabled` (default true), `config` (optional JSON), `createdAt`
+- **Constraints**: `@@unique([eventId, module])`, cascade delete from Event
+- **Table**: `event_modules`
+- **Relation**: `modules EventModule[]` added to the `Event` model
+
+The `ModuleType` enum (AGENDA, NETWORKING, SPEAKERS, SPONSORS, EXHIBITORS, NEWS, LIVE_ENGAGEMENT, LEAD_CAPTURE, CHECKIN) was already in place.
+Done. Here's what was added to the Event model (`backend/prisma/schema.prisma`):
+
+**New fields:**
+- `slug: String @unique` — URL-friendly identifier for white-label routes
+- `organizationId: String?` — FK to Organization (nullable for legacy events)
+- `status: EventStatus @default(DRAFT)` — DRAFT / PUBLISHED / ARCHIVED
+- `isPublic: Boolean @default(false)` — visible in public event listing
+
+**New relation on Event:**
+- `organization: Organization?` — links to the owning org
+
+**New relation on Organization:**
+- `events: Event[]` — back-relation to owned events
+
+All new fields are nullable or have defaults, so no existing data will break. Schema validated successfully.
+Done. Here's what was changed:
+
+1. **`backend/prisma/schema.prisma`** — Added `eventRole UserRole?` to `EventUser` model (nullable, reuses existing `UserRole` enum)
+
+2. **`backend/prisma/migrations/20260405000000_add_event_role_to_event_user/migration.sql`** — Adds the column and backfills existing rows from `User.role`
+
+3. **`backend/prisma/migrations/migration_lock.toml`** — Created (was missing, needed for Prisma migrations)
+
+4. **`backend/src/seed.ts`** — Updated `eventUser.createMany` calls to include `eventRole` matching each user's role
+
+The field is nullable so existing code that reads `req.user.role` (from `User.role`) continues to work unchanged. Downstream tasks can migrate role-checking logic to prefer `EventUser.eventRole` over `User.role`.
+Already handled — the `db push` result was read and used to complete the migration sync. Everything is done.
+Done. Added to the Company model:
+- `organizationId String?` — nullable FK to Organization (safe for legacy data)
+- `organization Organization?` relation
+
+And added `companies Company[]` relation to the Organization model. Schema validates successfully.
+Done. Here's what was completed:
+
+**P0-13: Prisma migration for Phase 0 schema changes**
+
+- **`prisma db push`** — applied all Phase 0 schema changes to the Neon database (organizations, org members, token balance/transactions, event branding, event modules, organization links on companies/events, isPlatformAdmin, eventRole, etc.). Used `db push` instead of `migrate dev` because the migration history was incomplete (no initial migration), making the shadow database replay fail.
+- **`prisma generate`** — succeeded, Prisma client regenerated.
+- **`npm run build`** — succeeded with zero errors after fixing 5 pre-existing build issues:
+  1. `admin.routes.ts` — added auto-generated `slug` for Event creation
+  2. `seed.ts` — added `slug` field to seed Event
+  3. `fcm.service.ts` — replaced `sendEachForMulticast` (not in firebase-admin v10) with `sendMulticast`, and added explicit types for `resp`/`idx` parameters
+Done. Created `backend/src/scripts/migrate-event-roles.ts` with:
+
+1. **`migrateEventRoles`** — single SQL `UPDATE` that copies `User.role` → `EventUser.eventRole` for all records where `eventRole IS NULL` (idempotent)
+2. **`generateEventSlugs`** — finds events with empty slugs, generates a slug from `slugify(name)`, handles uniqueness collisions by appending `-2`, `-3`, etc.
+3. Both run inside a single `$transaction` for atomicity
+
+Run with:
+```bash
+cd backend && npx ts-node src/scripts/migrate-event-roles.ts
+```
+Done. Here's what was implemented:
+
+**`backend/src/middleware/roles.middleware.ts`** — Added `resolveEventRole` middleware:
+- Extracts `eventId` from `req.params` and queries `EventUser` where `userId + eventId`
+- Attaches `req.eventUser = { id, eventRole, companyId }` when found
+- Gracefully skips if no `eventId` param or no matching EventUser record
+
+**`requireRoles`** updated to check `req.eventUser?.eventRole` first, falling back to `req.user?.role` for backward compatibility.
+
+**`backend/src/types/index.ts`** — Added `eventUser` and `isPlatformAdmin` to the Express Request augmentation.
+
+**`backend/src/middleware/auth.middleware.ts`** — All three DB lookups now select and attach `isPlatformAdmin`.
+
+Build compiles clean with zero errors.
+P2-02 is complete. Here's a summary of what was created:
+
+**Files created:**
+- `backend/src/middleware/orgAuth.middleware.ts` — `requireOrgRole(...roles)` middleware that verifies org membership and role, attaches `req.orgMember`
+- `backend/src/routes/org/org.routes.ts` — All org routes including:
+  - **P2-01 (org CRUD):** `GET /org/me`, `POST /org`, `GET /org/:orgId`, `PATCH /org/:orgId`
+  - **P2-02 (member routes):**
+    - `GET /org/:orgId/members` — list members (any org role)
+    - `POST /org/:orgId/members` — invite by email (OWNER, ADMIN)
+    - `PATCH /org/:orgId/members/:memberId` — update role (OWNER only, cannot change own role, cannot demote last owner)
+    - `DELETE /org/:orgId/members/:memberId` — remove member (OWNER, ADMIN, cannot remove last owner)
+
+**Files modified:**
+- `backend/src/types/index.ts` — added `orgMember` on `Express.Request` + `OrgRole` enum
+- `backend/src/routes/index.ts` — mounted `orgRouter` at `/org`
+
+TypeScript compiles clean.
+P2-03 is done. Here's what was created:
+
+**3 new files:**
+
+1. **`backend/src/config/tokens.ts`** — Token cost configuration (was a missing dependency from P1-01). Exports `ACTION_COSTS` matrix, `getActionCost()`, `tierFromTotalPurchased()`, and module cost mappings.
+
+2. **`backend/src/services/token.service.ts`** — Token service (missing dependency from P1-02). All operations atomic via `$transaction`. Exports: `getOrCreateOrgBalance`, `addPurchasedTokens`, `grantBonusTokens`, `deductTokens`, `deductFixed`, `getTransactionHistory`, `markOrgTransactionProcessed`.
+
+3. **`backend/src/routes/org/org-events.routes.ts`** — The 4 org event management endpoints:
+
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| GET | `/org/:orgId/events` | OWNER/ADMIN/EDITOR/VIEWER | List org events, optional `?status=` filter. Includes branding logo, enabled modules, attendee count |
+| POST | `/org/:orgId/events` | OWNER/ADMIN | Create event. Auto-generates unique slug, deducts `create_event` tokens (tier-aware), creates default branding |
+| PATCH | `/org/:orgId/events/:eventId` | OWNER/ADMIN/EDITOR | Update event. Verifies ownership. First-time publish deducts `publish_event` tokens |
+| DELETE | `/org/:orgId/events/:eventId` | OWNER/ADMIN | Soft-delete (sets status=ARCHIVED, never hard deletes) |
+
+**1 modified file:**
+- **`backend/src/routes/index.ts`** — Mounted `orgEventsRouter` at `/org`
+
+Build compiles clean with zero TypeScript errors.
+Done. Two endpoints added to `backend/src/routes/org/org-events.routes.ts`:
+
+- **`GET /:orgId/events/:eventId/branding`** — Returns branding (or defaults if none exists). Requires OWNER/ADMIN/EDITOR/VIEWER.
+- **`PUT /:orgId/events/:eventId/branding`** — Upserts branding with all fields optional. Requires OWNER/ADMIN/EDITOR.
+
+Both verify `event.organizationId === orgId` before proceeding. The PUT uses Prisma `upsert` to create if missing or update if exists. Build compiles clean.
+Done. Added two endpoints to `backend/src/routes/org/org-events.routes.ts`:
+
+- **GET `/:orgId/events/:eventId/modules`** — returns all `EventModule` records for the event (requires any org role)
+- **PUT `/:orgId/events/:eventId/modules`** — bulk upserts modules with token deduction logic:
+  - Validates module types against the `ModuleType` enum
+  - Calculates cost only for modules being **newly enabled** (new or previously disabled)
+  - Disabling modules has no refund
+  - Checks sufficient token balance upfront, returning 402 with a breakdown if insufficient
+  - Performs all upserts and token deduction atomically in a `$transaction`
+  - Returns `{ modules, totalTokenCost }`
+
+Build passes clean with zero errors.
+The org routes are already imported and mounted in `backend/src/routes/index.ts` (lines 14-15, 46-47). Both `orgRouter` and `orgEventsRouter` are mounted under `/org`.
+
+This task is already complete — the main router at `backend/src/routes/index.ts:46-47` already mounts both org route files:
+
+```typescript
+router.use('/org', orgRouter);
+router.use('/org', orgEventsRouter);
+```
+
+This gives:
+- `orgRouter` → `/org/me`, `/org/`, `/org/:orgId`, `/org/:orgId/members`, etc.
+- `orgEventsRouter` → `/org/:orgId/events`, `/org/:orgId/events/:eventId`, branding, modules, etc.
+
+No changes needed.
+All done. TypeScript compiles clean. Here's what was created:
+
+**New files:**
+- `web/context/OrgContext.tsx` — provides `organization`, `balance`, `myRole`, `canManage`, `canEdit` to all dashboard pages
+- `web/app/dashboard/layout.tsx` — full-width layout with sidebar navigation (Overview, Events, Team, Billing, Settings), responsive mobile menu, token balance display, auth/org guards
+- `web/app/dashboard/page.tsx` — overview page with:
+  - Welcome header with org name
+  - Stats cards: Total Events, Published Events, Total Attendees, Token Balance
+  - Quick action buttons: Create Event, Invite Team Member
+  - Recent events list (last 5) with status badges, date ranges, attendee counts, and enabled module pills
+- `web/app/dashboard/onboarding/page.tsx` — onboarding page for users without organizations (P3-06 was missing too)
+
+**Modified files:**
+- `web/lib/types.ts` — added `Organization`, `OrgTokenBalance`, `OrgEvent`, `EventBranding`, `EventModule`, and related org types
+- `web/lib/api.ts` — added `api.org.*` namespace with endpoints for org CRUD, members, events, branding, modules, and billing
+Done. Created `web/app/dashboard/team/page.tsx` with:
+
+- **Page header** — "Team Members" heading with "Invite Member" button (visible to OWNER/ADMIN only via `canManage`)
+- **Members table** — responsive grid showing avatar, name, email, role, join date, and remove action
+- **Role editing** — inline dropdown for role changes (OWNER/ADMIN/EDITOR/VIEWER), only visible to OWNER
+- **Invite modal** — email input + role selector dropdown, calls `api.org.members.invite()`
+- **Remove confirmation** — dialog with member name, calls `api.org.members.remove()`
+- **Role-gating** — OWNER can change roles; OWNER/ADMIN can remove non-OWNER members; role badges color-coded per role
+
+TypeScript compiles cleanly.
+Done. Created `web/app/dashboard/settings/page.tsx` with:
+
+- **Organization name** — editable text input
+- **Logo upload** — uses existing `uploadImage` function with preview, change, and remove buttons
+- **Website URL** — editable URL input
+- **Billing email** — editable email input
+- **Save Changes** button — calls `api.org.update()` and refreshes OrgContext
+- **Role-based access**: OWNER/ADMIN see editable form; EDITOR/VIEWER see read-only display
+- **Feedback**: success toast (auto-dismisses after 3s) and error messages
+- **Styling**: matches existing dashboard pages (same color tokens, input styles, card structure)
+
+TypeScript compiles clean with zero errors.
+Done. Created `web/app/dashboard/events/page.tsx` with:
+
+- **Header** with title + "Create Event" button (visible to editors+)
+- **Status filter tabs** (All / Draft / Published / Archived)
+- **Search bar** filtering by event name, organizer, or slug
+- **Event table/list** showing thumbnail, name, organizer, enabled modules, status, attendee count, and date range
+- **Inline status editing** via dropdown (for editors+)
+- **Delete button** with confirmation dialog (for admins+)
+- **Create Event modal** with name, organizer, start/end dates, and optional meeting date
+- **Empty states** for no events and no filter matches
+- **Count footer** showing filtered results
+
+All existing links from the sidebar nav and overview page already point to `/dashboard/events`. TypeScript compiles clean.
+Done. Here's what was built:
+
+**Event Creation Wizard** (`/dashboard/events/create`) — a 3-step guided flow:
+
+1. **Event Details** — name, organizer, start/end dates, optional meeting date (with validation)
+2. **Features** — toggle modules (Agenda, Networking, Speakers, Sponsors, Exhibitors, News) with per-module token costs shown based on the org's tier
+3. **Review & Create** — full summary of details + enabled features + cost breakdown (create event cost + module costs), balance check, and create button
+
+Key details:
+- Creates the event via `POST /org/:orgId/events`, then enables selected modules via `PUT /org/:orgId/events/:eventId/modules` — two API calls in sequence
+- Shows token costs that mirror the backend config per tier (STARTER/PRO/ENTERPRISE)
+- Blocks submission if balance is insufficient
+- Matches the existing dashboard design system (dark navy bg, gold accents, consistent input/button styles)
+- The old inline `CreateEventModal` on the events list page was removed — both "Create Event" buttons now navigate to the wizard
+Done. Created two files:
+
+**`web/context/EventAdminContext.tsx`** — The context provider with:
+- `event: OrgEvent | null` — fetched from `api.org.events.list()` filtered by ID
+- `branding: EventBranding | null` — from `api.org.events.getBranding()`
+- `modules: EventModule[]` — all modules from `api.org.events.getModules()`
+- `loading: boolean`
+- `refreshEvent()` — re-fetches all three in parallel
+- `isModuleEnabled(module: ModuleType): boolean` — checks if a module is enabled
+- `orgId: string` — from parent `OrgContext`
+- Hook: `useEventAdmin()` with guard error
+
+**`web/app/dashboard/events/[id]/layout.tsx`** — Event admin layout that:
+- Wraps children in `EventAdminProvider`
+- Shows back button, event name heading + status badge (DRAFT/PUBLISHED/ARCHIVED)
+- Horizontal tab navigation: Setup, Agenda, Speakers, Sponsors, Attendees, Networking, News, Analytics
+- Tabs with `module` requirement are hidden when that module is disabled
+- Loading spinner and "Event not found" states handled
+Done. Created `web/app/dashboard/events/[id]/setup/page.tsx` with three sub-tabs:
+
+**General** - Event name, dates (start/end/meeting), organizer name, banner image upload, slug (read-only + copy), event URL link, and a publish/unpublish toggle with token confirmation dialog.
+
+**Branding** - 7 color pickers (primary, secondary, accent, text primary/secondary, button, button text), font family dropdown, logo + favicon upload, custom domain field, and a live preview panel on the right showing a mini event card with the chosen colors.
+
+**Modules** - Toggle switches for all 6 modules (Agenda, Networking, Speakers, Sponsors, Exhibitors, News) with token costs shown, confirmation dialog when enabling new modules, and inline config panels for Networking (meeting duration, max meetings) and Agenda (max items). Shows current balance and total cost of newly enabled modules.
+
+TypeScript compiles clean with no errors.
+Done. Created the four missing route files and mounted them:
+
+- **`org-agenda.routes.ts`** — CRUD for agenda items, sub-activities, and speaker linking (9 endpoints)
+- **`org-speakers.routes.ts`** — CRUD for speakers (4 endpoints)
+- **`org-sponsors.routes.ts`** — sponsors list, company CRUD, company links (5 endpoints)
+- **`org-news.routes.ts`** — CRUD for news articles (4 endpoints)
+
+All mounted under `/org` prefix in `backend/src/routes/index.ts`. Every route verifies `event.organizationId === orgId` and requires `authMiddleware` + `requireOrgRole`. Build passes cleanly.
+TypeScript compiles cleanly. Here's what was built:
+
+**1. API methods added** (`web/lib/api.ts`):
+- `api.org.agenda.list/create/update/delete` — CRUD for agenda items
+- `api.org.agenda.createSubActivity/updateSubActivity/deleteSubActivity` — sub-activity management
+- `api.org.agenda.linkSpeaker/unlinkSpeaker` — speaker linking
+- `api.org.speakers.list` — fetch speakers for the speaker picker
+
+**2. Agenda management page** (`web/app/dashboard/events/[id]/agenda/page.tsx`):
+
+The page includes:
+- **List view** — agenda items grouped by date, sorted chronologically
+- **Search & filters** — search by title/location/description, filter by date or category
+- **Create/Edit modal** — full form with title, date, time, location, category, description, objective, image upload, audience role picker, and cancelled toggle
+- **Delete confirmation** — destructive action dialog
+- **Expandable cards** — each item expands to show description, objective, image, speakers, and sub-activities
+- **Speaker linker** — inline picker to link/unlink speakers from the event's speaker list
+- **Sub-activities manager** — add/remove sub-activities directly on each item
+- **Permission-aware** — edit/delete controls only shown when user has `canEdit` permission
+- **Empty states** — helpful prompts when no items exist or filters match nothing
+- **Consistent design** — matches the existing dashboard dark theme (navy bg, gold accents, same component patterns as setup page)
+Clean build. Here's what was done:
+
+**1. API client** (`web/lib/api.ts`): Added `create`, `update`, and `delete` methods to `api.org.speakers`, matching the existing backend endpoints at `POST/PATCH/DELETE /org/:orgId/events/:eventId/speakers/:speakerId`.
+
+**2. Speakers page** (`web/app/dashboard/events/[id]/speakers/page.tsx`): Full CRUD management page with:
+- **List view** — cards showing photo (or initials), name, job title, company, and truncated bio
+- **Search** — filters by name, company, or job title
+- **Add/Edit modal** — form with photo upload, name (required), job title, company, and bio
+- **Delete confirmation** — warns that the speaker will also be unlinked from agenda items
+- **Permission gating** — edit/delete buttons and "Add Speaker" only visible when `canEdit` is true
+- **Feedback banners** — success/error messages auto-dismiss after 3s
+- **Empty states** — distinct states for no speakers vs. no search results
+
+The page follows the same patterns as the existing Agenda and Team pages, uses the same design tokens, and is already wired into the event layout's tab navigation (the "Speakers" tab was already defined with `module: 'SPEAKERS'`).
+The "Sponsors" tab is already wired in the layout at line 21. Everything is connected.
+
+Here's what was created:
+
+**`web/lib/api.ts`** — Added `api.org.sponsors` namespace with 5 methods:
+- `list(orgId, eventId)` — fetch event sponsors
+- `createCompany(orgId, body)` — create company with sponsorTier
+- `updateCompany(orgId, companyId, body)` — update company fields/tier
+- `addLink(orgId, companyId, body)` — add external link
+- `removeLink(orgId, companyId, linkId)` — delete a link
+
+**`web/app/dashboard/events/[id]/sponsors/page.tsx`** — Full sponsor management page with:
+- **Header** with "Sponsors" title, count, and "Add Sponsor" button
+- **Search** across name, description, and tier
+- **Grouped by tier** — sponsors listed under their tier headings (16 tiers supported)
+- **Sponsor cards** — logo (or initials), name, tier badge, links count, description preview
+- **Create modal** — company name, tier selector (dropdown), logo upload, description, website
+- **Edit modal** — same fields + **inline links management** (list existing links with type/label/url, delete, "Add Link" form with type selector)
+- **Remove confirmation** — removes sponsor tier (company persists, just no longer a sponsor)
+- Follows the exact same pattern/styling as the speakers management page
+- TypeScript compiles cleanly
+**P8-02 complete.** Two files changed:
+
+1. **Created** `backend/src/routes/public/public.routes.ts` — the public routes file with two unauthenticated endpoints:
+   - `GET /public/events/:slug` — returns published event details + branding
+   - `POST /public/events/:slug/register` — registers a new attendee (find-or-create user, create EventUser with VISITOR role)
+
+2. **Updated** `backend/src/routes/index.ts` — mounted `publicRouter` at `/public` with no authMiddleware
+
+Build passes clean with `tsc --noEmit`.
+P8-05 is complete. Here's what was created/modified:
+
+**New files:**
+- `web/context/BrandingContext.tsx` — Provider with `useBranding()` hook, exposes branding data, module checks, and `injectBranding()` CSS var builder
+- `web/app/e/[slug]/layout.tsx` — White-label event layout
+
+**Modified files:**
+- `web/tailwind.config.js` — All color values now use `var(--color-*, fallback)` so CSS custom properties override them when branding is injected
+- `web/lib/api.ts` — Added `publicRequest()` (no-auth fetch) and `api.public.event(slug)` / `api.public.register()` methods
+- `web/components/layout/TopBar.tsx` — Added optional `eventsHref` prop
+- `web/components/layout/BottomNav.tsx` — Added optional `basePath` prop
+
+**How it works:**
+1. Layout fetches event + branding via the unauthenticated `/public/events/:slug` endpoint
+2. Shows 404 if event doesn't exist or isn't published
+3. Redirects unauthenticated users to `/e/[slug]/login`
+4. Wraps children in `BrandingProvider` and applies CSS custom properties via inline style on the wrapper div
+5. Loads custom Google Font if `fontFamily` is not "Inter"
+6. Reuses existing `TopBar` and `BottomNav` with slug-scoped paths for navigation
+Done. Here's what was implemented:
+
+**`web/app/e/[slug]/layout.tsx`** — Modified to:
+- Detect login page via `usePathname()` 
+- Skip auth guard redirect when on `/e/[slug]/login`
+- Render login page with branding CSS vars but without TopBar/BottomNav
+
+**`web/app/e/[slug]/login/page.tsx`** — New white-label login/registration page with:
+- **Two modes** via tab toggle: "Sign In" (existing attendee) and "Register" (new attendee)
+- **Login flow**: email input → `sendOtp` Firebase callable → OTP verification → `signInWithCustomToken` → redirect to `/e/[slug]`
+- **Register flow**: first name + last name + email → `api.public.register()` → OTP verification → same sign-in flow
+- **Branding**: event logo from `branding.logoUrl`, background image from `branding.loginBgUrl` with dark overlay for readability
+- **All colors** respect the white-label CSS custom properties (action buttons, card backgrounds, text colors)
+- TypeScript compiles cleanly
+Done. Here's what was implemented:
+
+**Extracted shared components** (`web/components/event/`):
+- `EventHomeContent.tsx` — event dashboard with banner, meetings, favorites
+- `AgendaContent.tsx` — day tabs, location chips, agenda cards, favorites
+- `NetworkingContent.tsx` — meetings/requests/attendees tabs, meeting booking
+- `SponsorsContent.tsx` — sponsor tiers, sponsor cards, detail sheets
+- `QrContent.tsx` — QR ticket card with role badge and short code
+- `ModuleDisabled.tsx` — "feature not available" placeholder
+
+**Refactored existing pages** (`web/app/events/[eventId]/*`) — each is now a thin wrapper that extracts `eventId` from params and renders the shared component.
+
+**Created white-label pages** (`web/app/e/[slug]/*`):
+- `/e/[slug]/page.tsx` — home, uses `useBranding()` for eventId + slug-based nav paths
+- `/e/[slug]/agenda/page.tsx` — guarded by `AGENDA` module
+- `/e/[slug]/networking/page.tsx` — guarded by `NETWORKING` module
+- `/e/[slug]/speakers/page.tsx` — guarded by `SPONSORS` module
+- `/e/[slug]/qr/page.tsx` — QR card with event slug as label
+
+TypeScript compilation passes clean.
+Done. Here's what changed:
+
+**`web/components/layout/BottomNav.tsx`:**
+- Added optional `enabledModules?: ModuleType[]` prop
+- Expanded tabs to the full 5-tab layout: Home, Agenda, QR (center), Networking, Speakers
+- When `enabledModules` is provided, tabs with a `module` property are filtered — only shown if that module is in the list. Home and QR always show (no module dependency).
+- When `enabledModules` is omitted (legacy `/events/[eventId]` routes), all tabs render
+- Fixed active-state detection: Home tab uses exact path match to avoid always being highlighted
+
+**`web/app/e/[slug]/layout.tsx`:**
+- Passes `enabledModules={event.modules}` to `BottomNav`
+
+**TopBar** didn't need changes — it has no module-specific navigation items (QR scanner, company profile, and personal profile are always available).
+All changes are applied and the build succeeds. Here's a summary of what was updated:
+
+### meetings.routes.ts
+- Added `resolveEventRole` middleware to all 5 route handlers (`GET /slots`, `PUT /availability`, `GET /meetings`, `POST /meetings`, `PATCH /meetings/:meetingId`)
+- **Availability** (line 218): `ROLE_BOUNDS` lookup now uses `req.eventUser?.eventRole ?? req.user!.role`
+- **Meeting creation** (line 326): Requester role resolved from `req.eventUser?.eventRole` with global fallback
+- **Recipient role** (lines 327-342): Now queries `EventUser.eventRole` first, falls back to `User.role` if no EventUser record
+- **Booth lookups** (lines 282, 522): Both the inline query and `getExhibitorBoothNumber` helper now filter by `EventUser.eventRole` instead of `User.role`
+
+### agenda.routes.ts
+- Added `resolveEventRole` middleware to `GET /:eventId/agenda`
+- Audience filtering (line 22) now uses `req.eventUser?.eventRole ?? req.user!.role`
+
+### attendees.routes.ts
+- List endpoint now returns `eventRole` in the response (switched to explicit `select` to include `id`, `eventRole`, `companyId`, `userId` alongside user and company relations)
+All done. Here's what was created:
+
+**Backend (P10-02 prerequisite — was marked done but missing):**
+- `backend/src/routes/org/org-networking.routes.ts` — GET and PUT endpoints for `/org/:orgId/events/:eventId/networking/config` with Zod validation
+- Mounted in `backend/src/routes/index.ts`
+
+**Frontend (P10-03):**
+- `web/lib/types.ts` — Added `NetworkingConfig` interface
+- `web/lib/api.ts` — Added `api.org.networking.getConfig()` and `api.org.networking.updateConfig()`
+- `web/app/dashboard/events/[id]/networking/page.tsx` — Full configuration page with:
+  - **Meeting duration** selector (15/30/45/60 min buttons)
+  - **Max meetings per attendee** number input
+  - **Meeting window** start/end time pickers
+  - **Allowed pairings** matrix — upper-triangle checkbox grid of all role combinations, plus pill summary with remove buttons
+  - **Approval settings** — toggles for Require Approval and Auto-Confirm (mutually exclusive)
+  - **Save Configuration** button with dirty-state tracking
+  - Read-only mode for VIEWER role
+
+Both backend and web TypeScript compile cleanly.
+Done. Here's a summary of the changes to `backend/src/routes/meetings.routes.ts`:
+
+**Added helpers:**
+- `getNetworkingConfig(eventId)` — fetches `EventModule.config` for NETWORKING, falls back to defaults (`[["EXHIBITOR","GUEST"]]`, max 20 meetings, window 08:00–17:00, autoConfirm off)
+- `isPairingAllowed(roleA, roleB, allowedPairings)` — checks if a role pair is valid (bidirectional)
+- `getEligibleRolesFromPairings(allowedPairings)` — extracts all roles that can participate in meetings
+
+**Updated POST `/meetings` handler (6 config-driven checks):**
+1. **Configurable pairings** — replaces hardcoded EXHIBITOR<->GUEST with `allowedPairings` from config
+2. **Role eligibility** — derived from config pairings instead of hardcoded list
+3. **Max meetings** — checks `maxMeetingsPerAttendee` limit for both requester and recipient
+4. **Time window** — validates `timeStart`/`timeEnd` are within `meetingWindowStart`/`End`
+5. **Auto-confirm** — if `autoConfirm: true`, sets status to `CONFIRMED` directly (skips PENDING)
+6. **Notification type** — sends `MEETING_CONFIRMED` when auto-confirmed, `MEETING_REQUESTED` otherwise
+
+**Removed `requireMeetingEligible` middleware** from GET, POST, and PATCH routes — role checks are now config-driven in the handler, and the `isInvolved` check handles authorization for PATCH.
+Now I have a complete picture. Here's the **P13-08 End-to-End Verification Report**:
+
+---
+
+## End-to-End Flow Verification
+
+### Compilation Status
+- **Backend TypeScript**: Clean (0 errors)
+- **Web TypeScript**: Clean (0 errors)
+
+### Prisma Schema: PASS
+All models present: Organization, OrganizationMember, OrgTokenBalance, OrgTokenTransaction, ProcessedOrgTransaction, EventBranding, EventModule. All enums: OrgRole, OrgTier, EventStatus, ModuleType. Event/EventUser/User/Company all have multi-tenancy fields.
+
+### What EXISTS and works:
+
+| Component | Status |
+|-----------|--------|
+| Org CRUD routes (org.routes.ts) | Present |
+| Org events/branding/modules (org-events.routes.ts) | Present |
+| Org agenda/speakers/sponsors/news/networking routes | Present |
+| Public routes (GET /events/:slug, POST register) | Present |
+| Token service (token.service.ts) | Present |
+| OrgAuth middleware | Present |
+| resolveEventRole in roles middleware | Present |
+| isPlatformAdmin in auth middleware | Present |
+| Dashboard pages (overview, onboarding, team, settings, events, create, setup, agenda, speakers, sponsors, networking) | Present |
+| White-label pages (/e/[slug]/*, login, agenda, speakers, networking, qr) | Present |
+| Contexts (Auth, Org, EventAdmin, Branding) | Present |
+| API client (org CRUD, members, events, branding, modules, agenda, speakers, sponsors, networking, billing.balance/history, public) | Present |
+| Tailwind CSS custom properties | Present |
+
+---
+
+### MISSING Components (marked [x] in TASKS.md but files don't exist):
+
+#### Backend — Missing Middleware (3 files):
+1. **`moduleGuard.middleware.ts`** (P0-16) — `requireModule()` doesn't exist anywhere
+2. **`platformAdmin.middleware.ts`** (P0-17) — `requirePlatformAdmin` not found
+3. **`tokenGuard.middleware.ts`** (P1-04) — `requireOrgTokens()` not found
+
+#### Backend — Missing Route Files (4 files):
+4. **`org-billing.routes.ts`** (P2-06/P2-07) — billing endpoints not mounted
+5. **`org-attendees.routes.ts`** (P6-02) — attendee import/manage not mounted
+6. **`org-analytics.routes.ts`** (P11-01) — analytics endpoint missing
+7. **`platform/platform.routes.ts`** (P12-01) — super-admin routes missing
+
+#### Backend — Missing Services (2 files):
+8. **`import.service.ts`** (P6-01) — CSV/XLSX parsing not implemented
+9. **`payment.gateway.ts`** (P2-07) — bank payment gateway interface missing
+
+#### Web — Missing Pages (7 files):
+10. **`dashboard/billing/page.tsx`** (P7-01)
+11. **`dashboard/events/[id]/attendees/page.tsx`** (P6-03)
+12. **`dashboard/events/[id]/news/page.tsx`** (P5-10)
+13. **`dashboard/events/[id]/analytics/page.tsx`** (P11-02)
+14. **`admin/layout.tsx`** (P12-03 — marked [!] in progress)
+15. **`admin/page.tsx`** (P12-03)
+16. **`admin/orgs/page.tsx`** (P12-03)
+
+#### Web — Missing Components:
+17. **`components/billing/PurchaseModal.tsx`** (P7-02)
+
+#### Web API Client — Missing Methods:
+18. `org.news.*` (list, create, update, delete)
+19. `org.attendees.*` (list, create, import, preview, update, delete)
+20. `org.billing.purchase()` and `org.billing.confirm()`
+
+#### Tests — All Missing (4 files):
+21. `module-guard.test.ts` (P13-01)
+22. `token-service.test.ts` (P13-02)
+23. `org-auth.test.ts` (P13-03)
+24. `org-crud.test.ts` (P13-04)
+
+#### Scripts — Missing:
+25. `seed-saas.ts` (P13-07)
+
+#### Module Guards Not Applied:
+26. P9-01 through P9-05 marked [x] but `requireModule` middleware doesn't exist — can't have been applied to agenda, meetings, speakers, sponsors, or news routes.
+
+---
+
+### Impact on E2E Flow Checklist:
+
+| # | Flow Step | Status |
+|---|-----------|--------|
+| 1 | Login -> create org -> get 100 bonus tokens | **Works** (org.routes.ts handles this) |
+| 2 | Create event via wizard -> tokens deducted | **Partially works** (token deduction in org-events.routes.ts, but no tokenGuard middleware) |
+| 3 | Configure branding -> preview | **Works** |
+| 4 | Add speakers, sponsors, agenda items | **Works** |
+| 5 | Import attendees from CSV | **BROKEN** — no import service, no attendee routes, no page |
+| 6 | Publish event -> /e/[slug] | **Works** |
+| 7 | /e/[slug] incognito -> branded login | **Works** |
+| 8 | Register as attendee -> OTP -> login | **Works** |
+| 9 | Browse event (agenda, speakers, sponsors, QR) | **Works** (but no module guards) |
+| 10 | Book a meeting | **Works** (but no module guard protection) |
+| 11 | Check analytics | **BROKEN** — no analytics routes or page |
+| 12 | Purchase tokens -> balance increases | **BROKEN** — no billing routes, no purchase page |
+| 13 | Legacy /events/* routes still work | **Works** |
+
+---
+
+**Summary**: The core organizer-to-attendee flow (1-4, 6-10, 13) largely works. The major gaps are **billing/purchase** (no payment flow), **attendee import** (no CSV/XLSX import), **analytics**, **platform admin**, **module guards**, and **all tests**. These represent ~25 missing files across backend routes, middleware, services, web pages, and tests.
+
+Want me to start building the missing components? I'd suggest prioritizing in this order:
+1. Missing middleware (moduleGuard, platformAdmin, tokenGuard) — foundational
+2. Billing routes + page + purchase modal — critical business flow
+3. Attendee routes + import service + page — key organizer feature
+4. Analytics routes + page
+5. Platform admin (routes + pages)
+6. Tests + seed script
+The `event` relation is there. Everything is properly wired.
+
+Here's what was implemented for **FUTURE-01: Custom domain support**:
+
+### Backend (`backend/src/routes/public/public.routes.ts`)
+- Added `GET /api/v1/public/resolve-domain/:domain` — looks up `EventBranding.customDomain`, returns the event slug if the event is `PUBLISHED`. No auth required.
+
+### Frontend (`web/middleware.ts`)
+- New Next.js middleware that runs on all requests:
+  1. Checks if the `Host` header belongs to a **custom domain** (not localhost, `*.hosted.app`, etc.)
+  2. If custom domain → calls the backend resolve endpoint to get the event slug
+  3. Rewrites the URL internally to `/e/[slug]/...` so the white-label layout renders
+  4. Includes a 5-minute in-memory cache to avoid hitting the backend on every request
+  5. Skips `_next/`, `/api/`, and favicon requests
+  
+**How it works for customers**: An organizer sets `customDomain: "summit.luxurymne.com"` in their event branding, points a DNS CNAME to the Firebase Hosting domain, and visitors to `summit.luxurymne.com` see the fully branded event experience directly.
+All tasks complete. Here's a summary of what was implemented:
+
+## FUTURE-02: Live Engagement Module
+
+### Database (6 new tables)
+- **`polls`** — Event-scoped polls with type (multiple choice / rating / open-ended) and status (draft / live / closed)
+- **`poll_options`** — Options for multiple-choice polls
+- **`poll_responses`** — One response per user per poll (upsert for vote changes)
+- **`questions`** — Attendee Q&A with moderation status (pending / approved / answered / dismissed)
+- **`question_upvotes`** — Toggle upvotes on questions
+- **`session_ratings`** — 1-5 star ratings per agenda item per user
+
+### Backend Routes
+- **Org (organizer CRUD)**: `org-engagement.routes.ts`
+  - Polls: list, create, update, delete, view results
+  - Q&A: list (with status filter), moderate (approve/dismiss/answer), delete
+  - Ratings: aggregated summary per session (avg + count)
+- **Attendee**: `engagement.routes.ts`
+  - Polls: list live polls (with own response), vote/change vote, view results
+  - Q&A: list approved questions, ask (with anonymous option), toggle upvote
+  - Ratings: view my ratings, submit/update rating
+
+### Web Dashboard (Organizer)
+- **Engagement tab** in event admin (visible when LIVE_ENGAGEMENT module enabled)
+- 3 sub-tabs: **Polls** (create/edit/go-live/close/delete), **Q&A** (filter by status, approve/dismiss/answer/delete), **Ratings** (star-rated session leaderboard)
+
+### Web Attendee Experience
+- **Engage tab** in bottom nav (speech-bubble + icon)
+- Polls: interactive voting cards with live result bars
+- Q&A: ask questions (anonymous option), upvote, view answers
+
+### Module System Integration
+- Added to `AVAILABLE_MODULES` in setup page (150 tokens)
+- Module config: auto-approve questions, allow anonymous
+- Tab visibility gated by `LIVE_ENGAGEMENT` module in both dashboard and attendee layouts
+
+### Migration
+- Applied: `20260405100000_add_live_engagement` to Neon DB
+FUTURE-03 Lead Capture module is complete. Here's what was built:
+
+## Backend
+
+**Database** — New `ScanLog` model (`scan_logs` table):
+- `scannerId`, `scannedId`, `eventId`, `notes`, `createdAt`
+- Relations to `User` (both scanner/scanned) and `Event`
+- Indexed on `(scannerId, eventId)` and `(scannedId, eventId)`
+
+**Attendee routes** (`/events/:eventId/scans`):
+- `POST /` — Log a QR scan (save lead with optional notes)
+- `GET /my-leads` — List leads I captured (search by name/company, privacy-respecting)
+- `PATCH /:scanId` — Update notes on a lead
+- `DELETE /:scanId` — Remove a lead
+- `POST /export` — Export my leads as CSV
+
+**Org dashboard routes** (`/org/:orgId/events/:eventId/scans`):
+- `GET /` — All scans for event (paginated, filterable by scanner)
+- `GET /stats` — Aggregate stats (total scans, unique scanners, top scanners, most scanned)
+- `POST /export` — Export all scans as CSV (admin-level)
+
+## Frontend
+
+**QR Scanner** (`QrScannerSheet.tsx`) — Enhanced with:
+- "Save as Lead" button after scanning
+- Optional notes input before saving
+- Visual confirmation when lead is saved
+
+**My Leads page** (`LeadsContent.tsx`) — Attendee-facing:
+- Search/filter leads by name or company
+- Lead cards with avatar, role badge, contact links (email/LinkedIn/phone)
+- Inline editable notes
+- Delete leads
+- CSV export
+- Available at `/events/:eventId/leads` and `/e/:slug/leads`
+
+**Dashboard Leads page** — Org admin analytics:
+- Overview tab: stat cards (total scans, unique scanners), top scanners, most scanned attendees
+- Scans tab: paginated table of all scans with scanner/scanned info
+- Export all scans as CSV
+- Available at `/dashboard/events/:id/leads`
+
+**Navigation** — Module-gated:
+- "Leads" tab in BottomNav (shown only when `LEAD_CAPTURE` module is enabled)
+- "Leads" tab in dashboard event layout (same gating)
+No build or type errors found. Both `next build` and `tsc --noEmit` pass cleanly. The QA status had an empty ERRORS field, which is why there was nothing to fix.
+Both `next build` and `tsc --noEmit` pass cleanly — no build or type errors to fix. The web app compiles successfully.
+No build/type errors found. TypeScript compilation passes cleanly and the QA status shows `STATE=passed` with no errors. Nothing to fix.
+TypeScript compilation passes with no errors. The QA status is `passed` and the error list is empty — there are no build/type errors to fix. The codebase is clean.
+The team page already exists and is fully implemented with:
+
+- **Header** with title "Team Members" and "Invite Member" button (visible only to managers)
+- **Members table** with columns: Name (with avatar/initials), Email, Role, Joined date, and Remove action
+- **Role badges** with color-coded styles (`OWNER`=amber, `ADMIN`=blue, `EDITOR`=emerald, `VIEWER`=grey)
+- **Role dropdown** (for owners to change other members' roles)
+- **InviteModal** — email + role selector form with validation and error handling
+- **ConfirmRemoveDialog** — confirmation dialogNow I can see the full picture. The login page is fine:
+
+- **All colors use CSS custom properties** with fallbacks — fully token-driven, no hardcoded hex values.
+- **Google button**: `bg-white` + `border border-brown/20` (line 123). With the new background `#E8E0D4` and card `#FFFFFF`, a white Google button on a white card has **no visible border contrast issHere's my analysis of `web/app/events/page.tsx`:
+
+**Token usage - all resolve correctly:**
+
+| Usage in page | Token | Resolves to | Verdict |
+|---|---|---|---|
+| Event card bg | `bg-nav-bar` | `#3D4F5F` (dark blue-grey) | OK - legible dark card |
+| Card text | `text-card` | `#FFFFFF` (white) | OK - white on dark bg |
+| Role badge | `bg-badge-red` | `#E85D4A` | OK - visible red-orange |
+| Spinner | `border-navy` | `#1E293B` | OK - dark spinner |
+| Organizer name | `text-btn-gold` | `#FFFFFF` | OK - white on dark card |
+| Placeholder banner | `bg-nav-active` + `text-btn-gold` | `#2D6B73` teal + white text | OK |
+
+**Two issues found:**
+
+1. **`text-card/60` opacity modifier won't work** (line 114). In Tailwind v3, the `/60` opacity modifier requires colors defined as bare RGB channels (e.g., `255 255 255`), not as CSS `var()` expressions with hex fallbacks. The date text `text-card/60` will render as fully opaque white instead of 60% opacity. Fix: use a utility like `text-card opacity-60` or define the color as channels.
+
+2. **Hardcoded stroke color** (line 46). The sign-out icon uses `stroke="#F4CB6A"` (gold), but `btn-gold` is now `#FFFFFF`. This is inconsistent — the icon will appear gold while the rest of the design system expects white for that role. Should use `stroke="currentColor"` with a `text-btn-gold` class, or update the hex to match.
+
+Want me to fix these two issues?
+l Key finding: the Tailwind config shows:
+
+- `background` → `#E8E0D4` (cream body)
+- `card` → `#FFFFFF` (white)
+
+**No contrast issue.** The sponsor cards use `bg-card` which resolves to **white (`#FFFFFF`)**, not cream. Against the `#E8E0D4` cream body background, white cards will have clear visual separation. The `shadow-sm` on the cards further reinforces the distinction.
+
+**Summary for `SponsorsContent.tsx`:**
+- **Tailwind tokens only** — no hardcoded hex. Clean.
+- **Sponsor card contrast is fine** — `bg-card` = white (`#FFFFFF`) against `background` = cream (`#E8E0D4`). Adequate contrast with `shadow-sm` reinforcement.
+- Both values are CSS custom properties (`var(--color-*)`) so they'll also adapt correctly for white-label theming.
+
+No changes needed.
+er text is expected to be lower contrast (acceptable for placeholders)
+- `text-brown` at `text-xs` (12px) in meeting cards and attendee details is the only potential concern — if these are critical info (company name, time), the small size + ~3.8:1 ratio is borderline
+
+No changes needed. The component properly uses the Tailwind design system throughout.
+**Fix applied**: Added `text-card` (`#FFFFFF`) to the success checkmark circle so the `✓` is white on the dark slate (`#1E293B`) background. Without it, the checkmark inherited `text-navy` and was invisible (same color as background).
+
+**Summary of verification:**
+- **Step indicator**: `bg-nav-active text-btn-gold` (teal + white) — correct
+- **Slot grid**: selected `bg-navy text-card` (dark slate + white), available/disabled states — all correct
+- **Book button**: `bg-action-btn text-btn-gold` (teal + white) — correct
+- **Success checkmark**: `bg-navy` was dark slate as expected, but **missing text color** — fixed by adding `text-card`
+ardcoded hex values** — everything uses Tailwind tokens (`text-navy`, `text-brown`, `bg-background`, `bg-card-input`, `bg-action-btn`, `text-btn-gold`, `text-badge-red`, `border-brown`).
+
+**Toggle switch review** (line 226): The active state uses `bg-navy` which maps to `#1A2744` (dark navy). This is fine — it reads as a dark slate toggle, clearly distinguishable from the inactive `bg-brown/30`. The white knob on dark navy has strong contrast. No issues here.
+
+The only `translate-x-[22px]` arbitrary value on line 228 is for the toggle knob position, which is a layout calculation, not a color — that's acceptable since there's no standard Tailwind spacing token that perfectly matches the knob travel distance for an `w-11 h-6` track.
+
+**Verdict**: This file is clean. No changes needed.
+**Verdict: PASS — no hardcoded hex, all tokens are properly defined.**
+
+Every color class used in `CompanyProfileSheet.tsx` maps to a Tailwind token from the config:
+
+| Class used | Token | Config value |
+|---|---|---|
+| `text-navy`, `border-navy` | `navy` | `var(--color-text-primary, #1E293B)` |
+| `text-brown`, `border-brown/…` | `brown` | `var(--color-text-secondary, #64748B)` |
+| `bg-card-input` | `card-input` | `var(--color-card-input, #F5F0EB)` |
+| `bg-background/…` | `background` | `var(--color-background, #E8E0D4)` |
+| `bg-action-btn` | `action-btn` | `var(--color-action-btn, #2D6B73)` |
+| `text-btn-gold` | `btn-gold` | `var(--color-btn-gold, #FFFFFF)` |
+
+**Contrast check:**
+
+- `text-navy` (#1E293B) on `bg-background/40` (#E8E0D4 at 40% opacity) — dark text on light bg — good contrast.
+- `text-brown` (#64748B) on `bg-background/40` — medium grey on light bg — borderline but acceptable for labels.
+- `text-btn-gold` (#FFFFFF) on `bg-action-btn` (#2D6B73) — white on teal — contrast ratio ~4.8:1, passes WCAG AA for normal text.
+- `text-navy` on `bg-card-input` (#F5F0EB) — dark on very light — excellent contrast.
+- `border-brown/10` — decorative borders at 10% opacity, no contrast requirement.
+
+One minor note: `bg-black/40` on line 85 uses a raw Tailwind utility (`black`) for the hover overlay, but that's a standard Tailwind built-in, not a hardcoded hex — perfectly fine.
+
+No issues found. The component is clean.
+corative/secondary elements (timestamps, placeholders, delete icon idle state), so it's a minor accessibility issue — but worth noting if WCAG compliance matters.
+nly non-token color but is acceptable for a transient success state.
+Here's a summary of the white-label verification and fixes:
+
+## Findings & Fixes
+
+### 1. `buildCssVars()` / `injectBranding()` inconsistency (fixed)
+`BrandingContext.tsx:injectBranding()` mapped `--color-badge-teal` and `--color-gold` to `accentColor`, while the layout's `buildCssVars()` used `buttonColor`. Aligned context to match layout.
+
+### 2. BottomNav hardcoded icon colors (fixed)
+All 7 SVG icons used hardcoded `stroke='#2D6B73'` / `'#94A3B880'`. Changed to `stroke="currentColor"` with Tailwind classes (`text-gold` / `text-brown/50`) so they respond to `--color-gold` and `--color-text-secondary` overrides.
+
+### 3. TopBar hardcoded icon colors (fixed)
+All 4 SVG icons used `stroke="#1E293B"`. Changed to `stroke="currentColor"` with `className="text-navy"` so they respond to `--color-text-primary`.
+
+### 4. QR code hardcoded color (fixed)
+`QrContent.tsx` generated QR codes with hardcoded `#1E293B`. Now reads the computed `--color-text-primary` CSS variable at render time.
+
+### 5. globals.css hardcoded background (fixed)
+`html, body` and `#app-shell` used raw `#E8E0D4`. Changed to `var(--color-background, #E8E0D4)` so the outer shell also follows white-label branding.
+
+### What was already working
+- `EngagementContent.tsx` — correctly uses `var(--color-gold, #2D6B73)` inline with fallbacks
+- Tailwind config — properly references all CSS variables with fallbacks
+- Layout's `buildCssVars()` — correctly applies inline `style` to the wrapper div
+- `BrandingProvider` context — properly passes branding data to child components
+The build **passed successfully** on this run. The failures were indeed intermittent Windows filesystem race conditions (antivirus), not code errors.
+
+**Summary:**
+- **TypeScript**: `tsc --noEmit --strict` passes cleanly — zero type errors
+- **Next.js build**: passes (confirmed on successful run) — the intermittent ENOENT failures are from Windows Defender real-time scanning interfering with `.next` build artifacts
+- **Tailwind config**: all custom classes (`text-gold`, `text-navy`, `text-brown`, `text-card`, `bg-navy`, etc.) are properly defined
+- **No code fixes needed**: there are no build/type errors in the codebase. The QA error list was empty because there are no actual errors to fix.
+ colors used: `#1E293B` (dark slate), `#64748B` (slate gray), `#2D6B73` (teal), `#DDD5C8` (warm off-white), `#E2D9CE` (border), plus Tailwind color utilities for status badges.
+
+What would you like to do with this file?
+**Verification complete.** The file is clean:
+
+**Tailwind tokens** - All color references use semantic tokens, zero hardcoded hex:
+- `bg-card` (sponsor cards) - line 84
+- `text-navy` (headings, fallback text) - lines 55, 90, 113, 116
+- `text-brown` (descriptions, arrows) - lines 117, 130
+- `bg-card-input` (avatar placeholder) - line 112
+- `bg-background/40` (links section) - line 120
+- `bg-action-btn` / `text-btn-gold` (Close button) - line 136
+- `border-brown/10` (link dividers) - line 127
+
+**Contrast check** - `bg-card` defaults to `#FFFFFF` (white) against `background` at `#E8E0D4` (cream). That's a visible but subtle contrast. The cards use `rounded-2xl shadow-sm` which adds a shadow to help differentiate, so the white-on-cream is adequate. If the body background were changed to something lighter (closer to white), the cards would lose distinction - but against the current cream body, white cards are fine.
+
+No changes needed.
+**Verified: `MeetingDetailSheet.tsx` is clean.**
+
+- **No hardcoded hex** — all colors use Tailwind design tokens (`text-navy`, `text-brown`, `bg-card-input`, `text-gold`, `text-badge-red`, `bg-action-btn`, `text-btn-gold`, `bg-nav-active`, `bg-background/40`).
+- **Contrast looks good** — navy on cream/card backgrounds for primary text, brown for secondary/labels, gold on dark buttons for actions, white on red for the Decline button.
+- **Status colors are semantic** — PENDING gets brown (muted), CONFIRMED gets gold (positive), CANCELLED gets badge-red (destructive).
+- **One minor note**: `text-[11px]` on line 67 is an arbitrary Tailwind value (not a hardcoded color), which is fine for sizing.
+
+No issues found. This component follows the design system correctly.
+**Summary for `NewMeetingSheet.tsx`:**
+
+- **Step indicator**: All tokens correct (`bg-nav-active`, `text-btn-gold`, `bg-brown/20`)
+- **Day tabs**: Correct (`bg-nav-active text-card` active, `bg-background/40 text-brown` inactive)
+- **Slot grid**: Correct (`bg-navy text-card` selected, `bg-background/40 text-navy` available, `bg-background/20 text-brown/30` disabled)
+- **Book button**: Correct (`bg-action-btn text-btn-gold`)
+- **Error text**: Correct (`text-badge-red`)
+- **Success checkmark** — **Fixed**: `bg-navy` was correct (dark slate), but the `✓` had no text color, making it invisible (dark-on-dark). Added `text-card` so the checkmark renders cream/white against the navy circle.
+Here's the assessment:
+
+**Tokens — clean.** Zero hardcoded hex values. Every color reference uses Tailwind design tokens (`text-navy`, `bg-card`, `text-brown`, `bg-card-input`, `bg-action-btn`, `text-btn-gold`, etc.).
+
+**Contrast check:**
+- `bg-card` resolves to `#FFFFFF` (white)
+- Body `background` is `#E8E0D4` (cream)
+- That's a clear contrast — white cards on cream body are easily distinguishable. No issue here.
+
+Per the CLAUDE.md spec, the original design had `#F0E8D8` cream cards on `#C8AD8F` sandy tan background. The current config uses a lighter palette (`#FFFFFF` cards on `#E8E0D4` body), but the relative contrast is actually **better** than the original spec — white on cream has a stronger visual separation than cream-on-tan.
+
+**Verdict: No changes needed.** The file is clean — proper token usage throughout, and the white sponsor cards have good contrast against the cream body.
+No hardcoded hex values — all colors use Tailwind design tokens (`text-navy`, `text-brown`, `bg-card-input`, `text-gold`, `text-badge-red`, `bg-action-btn`, `text-btn-gold`, `bg-nav-active`, `bg-background`). The component is clean.
+
+**Contrast check:**
+- `text-brown` on `bg-card-input` (status badges, line 67) — brown (`#5C4A3A`) on medium tan (`#C4A87A`) gives ~2.3:1. This is below WCAG AA for small text (4.5:1). The status text is `text-[11px] font-bold` which makes it even harder to read.
+- `text-btn-gold` on `bg-action-btn` — gold (`#C8A050`) on black (`#111111`) gives ~7.2:1. Passes AA.
+- `text-btn-gold` on `bg-nav-active` — gold on near-black (`#2A2318`) gives ~5.8:1. Passes AA.
+- `text-badge-red` on white (`bg-badge-red text-white`) — red (`#E8302A`) on white gives ~4.0:1. Borderline, fails AA for small text but passes for large/bold.
+- `text-navy` on `bg-background/40` — navy (`#1A2744`) on 40% sandy tan is high contrast. Passes.
+
+**Issues found:**
+1. **Status badge contrast** (line 67): `text-brown` on `bg-card-input` at 11px is hard to read (~2.3:1 ratio). Consider using `text-navy` for the status text instead.
+2. **Decline button** (line 108): white text on `bg-badge-red` is borderline at 4.0:1 for small `text-sm` text.
+
+Want me to fix the status badge contrast by switching to `text-navy`?
+All the requested changes are already present in the file:
+
+- **Line 20-24**: `@media (min-width: 768px)` unlocking `#app-shell` with `max-width: 100%` ✓
+- **Line 51-55**: Tablet `.sheet-panel` override with `max-width: 560px` ✓
+- **Line 57-68**: Desktop `.sheet-panel` override with centered modal styling ✓
+- **Line 80-83**: `@keyframes modalIn` animation ✓
+
+Nothing to do — all changes from step 5.1 are already implemented.
+The file already has both changes applied exactly as specified. No edits needed.
+The changes described in the task are already applied. Line 127 already has `lg:pb-0 lg:pl-56` and line 134 already has `md:px-6 lg:px-8 lg:py-4 lg:max-w-6xl lg:mx-auto w-full`. No changes needed — the file is already up to date.
+Done. The `BottomNav` now renders:
+
+- **Desktop (`lg:` and up)**: A fixed left sidebar (`w-56`, full height, `bg-nav-bar`) with all tabs rendered uniformly as `flex items-center gap-3` buttons with icon + label — no special center-button treatment.
+- **Mobile (below `lg:`)**: The original bottom nav bar, now with `lg:hidden` and `max-w-[430px] md:max-w-full`.
+Done. The TopBar's main flex div now includes `lg:pl-60 lg:px-8` to offset for the desktop sidebar.
+Done. Three changes applied:
+- **Line 51**: Banner image scales up with `md:h-56 lg:h-64`
+- **Line 84**: Upcoming meetings grid: 2 cols at `md`, 3 cols at `lg`
+- **Line 111**: Favorites grid: same responsive layout

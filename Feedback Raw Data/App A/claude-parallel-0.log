@@ -1,0 +1,633 @@
+Done. Here's what was created/modified:
+
+### New file
+- **`backend/src/middleware/orgAuth.middleware.ts`** — the org auth middleware with:
+  - `orgAuthMiddleware` — verifies user is a member of the org from `:orgId` route param, attaches `req.orgMember` (organizationId, role, organization details)
+  - `requireOrgRoles(...roles)` — factory for restricting to specific org roles (mirrors `requireRoles` pattern)
+  - `requireOrgAdmin` — shorthand for OWNER + ADMIN
+  - `requireOrgOwner` — shorthand for OWNER only
+
+### Modified files
+- **`backend/prisma/schema.prisma`** — added:
+  - `OrgMemberRole` enum (OWNER, ADMIN, MEMBER)
+  - `Organization` model (id, name, slug, logoUrl, timestamps, members, events)
+  - `OrganizationMember` model (unique on [organizationId, userId], cascading deletes)
+  - `organizationId` (optional) on `Event` with relation to Organization
+  - `organizationMembers` relation on `User`
+
+- **`backend/src/types/index.ts`** — added:
+  - `OrgMemberRole` enum
+  - `req.orgMember` to Express Request augmentation
+
+### Usage pattern
+```typescript
+// All org routes require auth + org membership
+orgRouter.use(authMiddleware, orgAuthMiddleware);
+
+// Admin-only routes
+orgRouter.delete('/:orgId', requireOrgAdmin, deleteOrgHandler);
+
+// Any member can read
+orgRouter.get('/:orgId/events', listOrgEventsHandler);
+```
+Done. Created `backend/src/services/token.service.ts` with the `markOrgTransactionProcessed` function that:
+
+- Attempts to insert a `ProcessedOrgTransaction` record with the payment provider's `transactionId`
+- Returns `true` on success (first arrival — caller should proceed with crediting tokens)
+- Returns `false` on Prisma `P2002` unique constraint violation (already processed — caller should skip)
+- Re-throws any other unexpected errors
+
+This follows the exact pattern from `docs/token-credits-system.md` section 7, adapted for the org-level `ProcessedOrgTransaction` model. The unique constraint on `transactionId` ensures whichever path (client confirm or webhook) arrives first wins.
+Done. Changes made:
+
+1. **`backend/src/types/index.ts`** — Added `isPlatformAdmin: boolean` to the Express `Request.user` type augmentation.
+2. **`backend/src/middleware/auth.middleware.ts`** — All three Prisma `select` clauses now include `isPlatformAdmin: true`, and both `req.user` assignment sites (dev bypass + production) now set `isPlatformAdmin` from the DB result.
+Done. Here's a summary of the changes to `backend/src/types/index.ts`:
+
+**New enums (matching Prisma schema):**
+- `OrgRole` — OWNER, ADMIN, EDITOR, VIEWER
+- `OrgTier` — STARTER, PRO, ENTERPRISE
+- `EventStatus` — DRAFT, PUBLISHED, ARCHIVED
+- `ModuleType` — AGENDA, NETWORKING, SPEAKERS, SPONSORS, EXHIBITORS, NEWS, LIVE_ENGAGEMENT, LEAD_CAPTURE, CHECKIN
+
+**SponsorTier sync:** Expanded from 2 values to all 16 tiers defined in Prisma (MAIN_STRATEGIC_PARTNER through MEDIA_PARTNER).
+
+**New DTO interfaces:**
+- `OrganizationDto` — org identity + billing
+- `OrgMemberDto` — member with role and optional user details
+- `OrgTokenBalanceDto` — balance, tier, totals
+- `OrgTokenTransactionDto` — ledger entries
+- `EventBrandingDto` — white-label colors, fonts, logos, custom domain
+- `EventModuleDto` — feature toggles per event
+
+**New constants:**
+- `TokenAction` / `TokenActionType` — well-known transaction actions (purchase, bonus, create_event, refund)
+- `ORG_WRITE_ROLES` — roles with write access (Owner, Admin, Editor)
+- `ORG_ADMIN_ROLES` — roles with admin access (Owner, Admin)
+
+**Express Request augmentation:**
+- Added `isPlatformAdmin` to `req.user`
+- Added `req.org` with `id`, `slug`, `memberRole` for org-scoped middleware
+Done. Here's what was created:
+
+**New file: `backend/src/routes/org.routes.ts`** — mounted at `/api/v1/org`
+
+**Endpoints:**
+
+| Method | Path | Access | Description |
+|--------|------|--------|-------------|
+| `POST` | `/org` | Any authenticated user | Create org (caller becomes OWNER) |
+| `GET` | `/org` | Any authenticated user | List user's organizations |
+| `GET` | `/org/:orgId` | Member | Get org details + members |
+| `PATCH` | `/org/:orgId` | ADMIN+ | Update org name/logo/website/billing |
+| `DELETE` | `/org/:orgId` | OWNER only | Delete organization |
+| `GET` | `/org/:orgId/members` | Member | List members |
+| `POST` | `/org/:orgId/members` | ADMIN+ | Add member by email |
+| `PATCH` | `/org/:orgId/members/:memberId` | ADMIN+ | Change member role (not OWNER) |
+| `DELETE` | `/org/:orgId/members/:memberId` | ADMIN+ | Remove member (not OWNER) |
+| `GET` | `/org/:orgId/events` | Member | List org's events |
+
+**Key design decisions:**
+- Role hierarchy enforced via `ORG_ROLE_RANK` (OWNER > ADMIN > EDITOR > VIEWER)
+- Creating an org auto-creates the caller as OWNER and initializes a STARTER token balance
+- OWNER role is protected — cannot be changed or removed via member endpoints
+- Members can only be added with ADMIN/EDITOR/VIEWER roles (not OWNER)
+- Follows existing patterns: Zod validation, `prisma` imports, `authMiddleware`, consistent error responses
+All three files are clean. Here's a summary of what was created:
+
+### Files created/modified
+
+1. **`backend/src/services/token.service.ts`** (new) — Core token service with:
+   - **Tier system**: STARTER/PRO/ENTERPRISE thresholds based on `totalPurchased`
+   - **Action cost matrix**: `create_event`, `publish_event`, `add_attendee`, `enable_module`, `send_notification`, `export_data` — with tier-based pricing (higher tiers get discounts)
+   - **`deductTokens(orgId, action)`** — atomic deduction using Prisma `$transaction`, records to the ledger
+   - **`deductFixed(orgId, cost, action)`** — caller-specified cost for variable-price actions
+   - **`addPurchasedTokens(orgId, amount)`** — credits tokens + recalculates tier
+   - **`grantBonusTokens(orgId, amount, reason)`** — credits without affecting tier
+   - **`getOrCreateBalance(orgId)`** — upsert helper
+
+2. **`backend/src/middleware/tokens.middleware.ts`** (new) — Two middleware factories:
+   - **`requireTokens(action)`** — resolves org from `req.organizationId` or `req.params.orgId`, deducts tokens atomically, attaches `req.tokenCost`/`req.newBalance`, returns 402 with structured error if insufficient
+   - **`checkTokens(action)`** — read-only pre-flight check (no deduction), useful for confirmation dialogs
+
+3. **`backend/src/types/index.ts`** (modified) — Added `organizationId`, `tokenCost`, and `newBalance` to the Express Request augmentation
+
+### Usage pattern
+```typescript
+router.post('/events', authMiddleware, requireTokens('create_event'), handler);
+// handler can read req.tokenCost and req.newBalance
+```
+Done. Here's what was created/modified:
+
+**`web/context/OrgContext.tsx`** (new) — The OrgContext provider with:
+- `organization`, `membership`, `balance` — fetched from `api.org.get(orgId)` on mount
+- `loading` — true while fetching
+- `refreshOrg()` — re-fetches org data
+- `canManage` — true for OWNER or ADMIN
+- `canEdit` — true for OWNER, ADMIN, or EDITOR
+- Reads `orgId` from URL params (`useParams`)
+- `useOrg()` hook with guard error
+
+**`web/lib/types.ts`** (modified) — Added org-related types as P3-01 dependency: `OrgRole`, `OrgTier`, `EventStatus`, `ModuleType`, `Organization`, `OrganizationMember`, `OrgTokenBalance`, `OrgTokenTransaction`, `EventBranding`, `EventModule`
+
+**`web/lib/api.ts`** (modified) — Added `api.org` namespace as P3-02 dependency with all org endpoints: CRUD, members, events, branding, modules, billing
+All files look correct. Here's a summary of what was implemented:
+
+## Changes Summary
+
+### New File
+- **`web/app/onboarding/page.tsx`** — Two-step onboarding page:
+  1. **Welcome step**: Shows "Welcome to Eventify" with three feature highlight cards (Create Events, Attendee Networking, 100 Free Tokens) and a "Create Organization" CTA button
+  2. **Create step**: Form with organization name (required) and website (optional), calls `POST /org` to create the org with OWNER membership + 100 token welcome bonus, then redirects to `/events`
+
+### Modified Files
+- **`web/lib/types.ts`** — Added `OrgRole`, `OrgTier`, `OrgTokenBalance`, and `Organization` types
+- **`web/lib/api.ts`** — Added `api.org.mine()` and `api.org.create()` methods hitting `/org/me` and `POST /org`
+- **`web/context/AuthContext.tsx`** — Loads organizations alongside user on auth state change. Exposes `organizations`, `orgsLoading`, and `refreshOrgs()` to all consumers
+- **`web/app/page.tsx`** — Root router now checks `organizations.length === 0` → redirects to `/onboarding` instead of always going to `/events`
+- **`web/app/login/page.tsx`** — Post-login redirect goes to `/` (root) which handles the onboarding vs events decision. Already-authenticated redirect also checks org membership
+- **`web/app/events/page.tsx`** — Guards against direct navigation: redirects to `/onboarding` if user has no organizations
+
+### Flow
+```
+Login → / (root) → orgs.length === 0? → /onboarding → create org → /events
+                  → orgs.length > 0?  → /events
+```
+Everything looks correct. Here's what I implemented:
+
+**`web/lib/types.ts`** — Added organization types (P3-01 was marked done but types were missing):
+- Enums: `OrgRole`, `OrgTier`, `EventStatus`, `ModuleType`
+- Models: `Organization`, `OrganizationMember`, `OrgTokenBalance`, `OrgTokenTransaction`, `EventBranding`, `EventModule`
+- Response types: `OrganizationSummary` (for list), `OrganizationDetail` (for get), `OrgEvent` (for org event list)
+
+**`web/lib/api.ts`** — Added `api.org` namespace with all 16 endpoints from the TASKS.md spec:
+
+| Method | Backend Route |
+|---|---|
+| `org.list()` | `GET /org/me` |
+| `org.get(orgId)` | `GET /org/:orgId` |
+| `org.create(body)` | `POST /org` |
+| `org.update(orgId, body)` | `PATCH /org/:orgId` |
+| `org.members.list(orgId)` | `GET /org/:orgId/members` |
+| `org.members.invite(orgId, body)` | `POST /org/:orgId/members` |
+| `org.members.updateRole(orgId, memberId, role)` | `PATCH /org/:orgId/members/:memberId` |
+| `org.members.remove(orgId, memberId)` | `DELETE /org/:orgId/members/:memberId` |
+| `org.events.list(orgId, status?)` | `GET /org/:orgId/events` |
+| `org.events.create(orgId, body)` | `POST /org/:orgId/events` |
+| `org.events.update(orgId, eventId, body)` | `PATCH /org/:orgId/events/:eventId` |
+| `org.events.delete(orgId, eventId)` | `DELETE /org/:orgId/events/:eventId` |
+| `org.events.getBranding(orgId, eventId)` | `GET /org/:orgId/events/:eventId/branding` |
+| `org.events.updateBranding(orgId, eventId, body)` | `PUT /org/:orgId/events/:eventId/branding` |
+| `org.events.getModules(orgId, eventId)` | `GET /org/:orgId/events/:eventId/modules` |
+| `org.events.updateModules(orgId, eventId, body)` | `PUT /org/:orgId/events/:eventId/modules` |
+| `org.billing.balance(orgId)` | `GET /org/:orgId/billing/balance` |
+| `org.billing.history(orgId)` | `GET /org/:orgId/billing/history` |
+| `org.billing.purchase(orgId, body)` | `POST /org/:orgId/billing/purchase` |
+| `org.billing.confirm(orgId, body)` | `POST /org/:orgId/billing/confirm` |
+
+All response types match the actual backend handler return shapes. The pattern follows the existing `api.*` namespace convention used throughout the file.
+Done. Here's what was created:
+
+**New file: `backend/src/routes/org/org-agenda.routes.ts`**
+
+All routes are under `/api/v1/org/:orgId/events/:eventId/agenda` with org RBAC via `requireOrgRole`:
+
+| Method | Path | Roles | Description |
+|--------|------|-------|-------------|
+| GET | `/.../agenda` | OWNER, ADMIN, EDITOR, VIEWER | List agenda items (supports `?date=` and `?location=` filters) |
+| GET | `/.../agenda/:itemId` | OWNER, ADMIN, EDITOR, VIEWER | Get single agenda item |
+| POST | `/.../agenda` | OWNER, ADMIN, EDITOR | Create agenda item (with audience roles) |
+| PATCH | `/.../agenda/:itemId` | OWNER, ADMIN, EDITOR | Update agenda item |
+| DELETE | `/.../agenda/:itemId` | OWNER, ADMIN | Delete agenda item |
+| POST | `/.../agenda/:itemId/sub-activities` | OWNER, ADMIN, EDITOR | Add sub-activity |
+| PATCH | `/.../agenda/:itemId/sub-activities/:subId` | OWNER, ADMIN, EDITOR | Update sub-activity |
+| DELETE | `/.../agenda/:itemId/sub-activities/:subId` | OWNER, ADMIN | Delete sub-activity |
+| POST | `/.../agenda/:itemId/speakers` | OWNER, ADMIN, EDITOR | Link speaker to agenda item |
+| DELETE | `/.../agenda/:itemId/speakers/:speakerId` | OWNER, ADMIN, EDITOR | Unlink speaker |
+
+Key design decisions:
+- **Ownership verification** at every level: event belongs to org, agenda item belongs to event, sub-activity belongs to agenda item, speaker belongs to event
+- **Zod validation** matching the existing `admin.routes.ts` schemas
+- **Consistent include shape** (audience, speakers with speaker details, sub-activities sorted by sortOrder)
+- **VIEWER can read, EDITOR+ can write, only OWNER/ADMIN can delete** — following the pattern from `org-events.routes.ts`
+Done. Here's what was created:
+
+**New file:** `backend/src/routes/org/org-sponsors.routes.ts`
+
+**Routes (all under `/api/v1/org/:orgId/sponsors`):**
+
+| Method | Path | Roles | Description |
+|--------|------|-------|-------------|
+| `GET` | `/:orgId/sponsors` | OWNER, ADMIN, EDITOR, VIEWER | List org's sponsors (optional `?tier=` filter) |
+| `POST` | `/:orgId/sponsors` | OWNER, ADMIN | Create a new sponsor |
+| `GET` | `/:orgId/sponsors/:sponsorId` | OWNER, ADMIN, EDITOR, VIEWER | Get sponsor details |
+| `PATCH` | `/:orgId/sponsors/:sponsorId` | OWNER, ADMIN, EDITOR | Update sponsor fields |
+| `DELETE` | `/:orgId/sponsors/:sponsorId` | OWNER, ADMIN | Delete a sponsor |
+| `POST` | `/:orgId/sponsors/:sponsorId/links` | OWNER, ADMIN, EDITOR | Add a link (website/LinkedIn/etc.) |
+| `DELETE` | `/:orgId/sponsors/:sponsorId/links/:linkId` | OWNER, ADMIN, EDITOR | Remove a link |
+| `PUT` | `/:orgId/sponsors/reorder` | OWNER, ADMIN, EDITOR | Bulk update sort order |
+
+**Key design decisions:**
+- Sponsors are `Company` records with `sponsorTier` set (not null) and `organizationId` matching the org — same model as existing code
+- All routes verify org ownership (`organizationId === orgId` and `sponsorTier !== null`)
+- Follows the exact patterns from `org-events.routes.ts` — same middleware chain, error handling, and response shapes
+- Zod validation for create/update with all 16 `SponsorTier` enum values
+- No token costs for individual sponsor CRUD (token costs are for enabling the SPONSORS *module*, already handled in `org-events.routes.ts`)
+- Registered in `backend/src/routes/index.ts` alongside the other org routes
+All three files are in place. Here's a summary of what was created:
+
+### Files created/modified
+
+1. **`backend/src/services/import.service.ts`** — Core import service with:
+   - **CSV parser** — handles quoted fields, escaped quotes, UTF-8
+   - **Excel parser** — uses ExcelJS, supports sheet selection and configurable header rows
+   - **Flexible column mapping** — normalizes header names (e.g., "First Name", "firstname", "first_name" all map to `firstName`) for 4 entity types
+   - **Zod validation** per entity type (attendees, speakers, sponsors, agenda)
+   - **Import functions** for each entity type with upsert logic:
+     - **Attendees**: creates User + Company + EventUser enrollment, generates QR short codes, placeholder Firebase UIDs (auto-linked on first login)
+     - **Speakers**: upserts by name within event
+     - **Sponsors**: upserts company with tier mapping (16 tiers), links (website/LinkedIn/Instagram), preserves GCS logos
+     - **Agenda**: upserts by title+date+time, creates audience roles and links speakers by name
+   - **`processImport()`** — single entry point: parse → validate → import (with dry-run support)
+
+2. **`backend/src/routes/org/org-import.routes.ts`** — Two endpoints:
+   - `POST /api/v1/org/:orgId/events/:eventId/import/preview` — parse + validate only (OWNER/ADMIN/EDITOR), returns row-by-row validation results
+   - `POST /api/v1/org/:orgId/events/:eventId/import` — parse + validate + write to DB (OWNER/ADMIN only), supports `dryRun` flag
+   - Both accept multipart file upload (10MB limit) with fields: `file`, `entityType`, optional `sheetName`, `headerRow`
+
+3. **`backend/src/routes/index.ts`** — registered `orgImportRouter` under `/org`
+Done. Here's a summary of what was created:
+
+**New file:** `backend/src/routes/org/org-attendees.routes.ts`
+
+**6 endpoints** for org-scoped attendee management:
+
+| Method | Route | Access | Description |
+|--------|-------|--------|-------------|
+| `GET` | `/org/:orgId/events/:eventId/attendees` | All org roles | List attendees with search (`?search=`) and role filter (`?role=`) |
+| `GET` | `/org/:orgId/events/:eventId/attendees/:attendeeId` | All org roles | Get single attendee with full details (bio, privacy settings, company links) |
+| `POST` | `/org/:orgId/events/:eventId/attendees` | Owner/Admin/Editor | Add attendee — finds existing user by email or creates new one (with shortCode, placeholder firebaseUid) |
+| `POST` | `/org/:orgId/events/:eventId/attendees/bulk` | Owner/Admin | Bulk add up to 200 attendees, returns per-entry results with summary |
+| `PATCH` | `/org/:orgId/events/:eventId/attendees/:attendeeId` | Owner/Admin/Editor | Update eventRole and/or companyId |
+| `DELETE` | `/org/:orgId/events/:eventId/attendees/:attendeeId` | Owner/Admin | Remove attendee from event |
+
+**Key design decisions:**
+- Follows the same patterns as `org-events.routes.ts` and `org.routes.ts` (middleware chain, event ownership verification, Zod validation)
+- New users get a placeholder `firebaseUid` — auto-linked on first OTP login via the auth middleware's email fallback
+- `shortCode` generation uses the same charset as `seed.ts` (excludes ambiguous chars), with 5-attempt retry
+- Bulk endpoint is non-transactional per entry — partial success is reported rather than all-or-nothing, so one bad row doesn't block the rest
+- 409 on duplicate enrollment instead of silently upserting
+Created `web/components/billing/TokenPurchaseModal.tsx` — a multi-step modal for purchasing tokens.
+
+**Component features:**
+
+- **4 steps**: Select package → Review order → Processing → Success
+- **6 predefined packages** (100, 250, 500, 1K, 2.5K, 5K tokens) in a 2-column grid with "Popular" badge on 500
+- **Custom amount input** toggled via link, with live EUR price calculation
+- **Tier-aware pricing** — reads from `useOrg()` context, shows per-token price based on current tier (STARTER €0.50, PRO €0.40, ENTERPRISE €0.30)
+- **Tier upgrade hints** — shows how many more tokens needed for next tier; highlights when a purchase triggers an upgrade
+- **Review step** — shows order summary, price breakdown, projected balance after purchase
+- **Success step** — shows confirmation with new balance and upgrade badge if applicable
+- **Paddle-ready** — payment flow has TODO comments marking where `api.org.billing.purchase()` and Paddle checkout overlay will integrate
+- **Consistent styling** — matches dashboard dark theme (`#162938` bg, `#1E3548` cards, `#D8A84B` gold buttons, `#F4CB6A` text)
+
+**Usage:**
+```tsx
+import { TokenPurchaseModal } from '@/components/billing/TokenPurchaseModal';
+
+// In any dashboard page within OrgProvider:
+{showPurchase && (
+  <TokenPurchaseModal
+    onClose={() => setShowPurchase(false)}
+    onSuccess={(amount) => console.log(`Purchased ${amount} tokens`)}
+  />
+)}
+```
+The implementation looks correct. Here's what was enhanced in the sidebar token balance widget at `web/app/dashboard/layout.tsx`:
+
+**Changes made:**
+
+1. **Tier badge** — Color-coded pill (purple for Enterprise, blue for Pro, muted for Starter) replacing plain text
+2. **Prominent balance** — Large `text-xl` number with `tabular-nums` for clean digit alignment
+3. **Usage progress bar** — Shows remaining percentage of `totalPurchased`, with color states:
+   - Gold (`#D8A84B`) — normal
+   - Amber — when <= 20% remaining ("Running low")
+   - Red — when 0 tokens ("No tokens remaining")
+4. **Usage stats** — Shows tokens used count alongside the percentage
+5. **Loading skeleton** — Animated pulse placeholder when `balance` is null (instead of hiding entirely)
+6. **Always visible** — The widget now renders in both loading and loaded states, anchored to sidebar bottom with `mt-auto`
+Done. Here's what changed:
+
+**`web/app/globals.css`** — Added a `@layer base { :root { ... } }` block defining all 12 color tokens as CSS custom properties using space-separated RGB channels (e.g., `--color-background: 22 41 56`). Replaced the 3 hardcoded hex values (`#162938`, `#1E3548`) with `rgb(var(--color-*))` references.
+
+**`web/tailwind.config.js`** — Replaced all hardcoded hex color values with `rgb(var(--color-*) / <alpha-value>)`, which lets Tailwind's opacity modifiers (e.g., `bg-background/50`) work correctly with the CSS variables.
+
+All existing Tailwind utility classes (`bg-background`, `text-navy`, `bg-card`, etc.) continue to work identically — the color values are unchanged, just sourced from CSS custom properties now. This enables runtime theming by overriding the variables (e.g., in a `.dark` or alternate theme class).
+Done. Here's what was created/modified:
+
+**Backend:**
+- `backend/src/routes/uploads.routes.ts` — Added `'news-image'` to `VALID_TARGETS` so news cover images can be uploaded
+
+**Web API client (`web/lib/api.ts`):**
+- Added `api.org.news` namespace with full CRUD: `list`, `create`, `update`, `delete`
+- Extended `uploadImage` target type to include `'news-image'`
+
+**New page (`web/app/dashboard/events/[id]/news/page.tsx`):**
+- Full news management page following the same patterns as the speakers page
+- **NewsCard** — shows thumbnail, title, date, author, and content preview with edit/delete actions (permission-gated via `canEdit`)
+- **NewsFormModal** — create/edit form with title, date, author, content textarea, and cover image upload
+- **Search** — filter articles by title, content, or author
+- **Empty state** — friendly CTA when no articles exist
+- **ConfirmDialog** — delete confirmation
+- **FeedbackBanner** — success/error notifications with auto-dismiss
+
+The News tab was already wired in the layout (`layout.tsx:24`) and appears automatically when the `NEWS` module is enabled for the event.
+All changes accounted for. Here's a summary of what was created:
+
+## Changes Summary
+
+### New files (3):
+- **`backend/prisma/migrations/20260405000002_add_meeting_config/migration.sql`** — Migration to create the `meeting_configs` table with proper FK to `events`
+- **`backend/src/services/meeting-config.service.ts`** — Config resolution service with:
+  - `getMeetingConfig(eventId)` — returns stored config or defaults
+  - `generateSlotsFromConfig(config)` — generates slot grid from schedule blocks + duration/gap params
+  - `isValidPairing(config, roleA, roleB)` — checks pairing rules
+  - `getDefaultMeetingConfig()` — returns the default config (mirrors current hardcoded values)
+- **`backend/src/routes/org/org-meeting-config.routes.ts`** — Org-level CRUD routes:
+  - `GET /org/:orgId/events/:eventId/meeting-config` — read config
+  - `GET /org/:orgId/events/:eventId/meeting-config/defaults` — get defaults
+  - `PUT /org/:orgId/events/:eventId/meeting-config` — upsert config (with Zod validation)
+  - `DELETE /org/:orgId/events/:eventId/meeting-config` — reset to defaults
+
+### Modified files (4):
+- **`backend/prisma/schema.prisma`** — Added `MeetingConfig` model (1:1 with Event) with fields: `slotDurationMinutes`, `slotGapMinutes`, `schedule` (JSON), `eligibleRoles` (JSON), `pairingRules` (JSON), `roleBounds` (JSON), `autoConfirm`, `maxMeetingsPerUser`
+- **`backend/src/types/index.ts`** — Added TypeScript interfaces: `ScheduleBlock`, `PairingRule`, `RoleBound`, `MeetingConfigResolved`
+- **`backend/src/routes/meetings.routes.ts`** — Added public `GET /events/:eventId/meeting-config` endpoint for attendee-facing config reads
+- **`backend/src/routes/index.ts`** — Wired `orgMeetingConfigRouter`
+Done. Here's what I did:
+
+1. **Created `backend/src/middleware/module.middleware.ts`** — a factory middleware `requireModule(moduleType)` that checks the `EventModule` table to verify the specified module is enabled for the event. Returns 403 if the module is not enabled, 400 if `eventId` is missing.
+
+2. **Updated `backend/src/routes/sponsors.routes.ts`** — added `requireModule(ModuleType.SPONSORS)` after `authMiddleware` on both routes:
+   - `GET /:eventId/sponsors` (list)
+   - `GET /:eventId/sponsors/:companyId` (detail)
+
+The middleware uses the `eventId_module` compound unique key for an efficient single-row lookup, matching the Prisma schema's `EventModule` model.
+Done. Here's what was created:
+
+### New file: `backend/src/routes/org/org-networking.routes.ts`
+
+Three endpoints under `/api/v1/org/:orgId/events/:eventId/networking/`:
+
+| Method | Path | Access | Purpose |
+|--------|------|--------|---------|
+| `GET` | `.../networking/config` | Owner, Admin, Editor, Viewer | Fetch networking config (merges saved config with defaults) |
+| `PUT` | `.../networking/config` | Owner, Admin, Editor | Update networking config (partial merge — only sent fields are overwritten) |
+| `GET` | `.../networking/slots/preview` | Owner, Admin, Editor, Viewer | Preview the full slot+break schedule grid based on current config |
+
+### Configuration fields (all optional, with defaults matching current hardcoded values):
+
+- **`slotDurationMinutes`** (default: 11) — meeting slot duration
+- **`gapMinutes`** (default: 2) — gap between slots
+- **`sessionStart` / `sessionEnd`** (default: 10:05–14:10) — overall session window
+- **`slots`** — explicit array of `{timeStart, timeEnd}` bookable slots
+- **`breaks`** — array of `{timeStart, timeEnd, label}` non-bookable breaks
+- **`rolePairings`** — allowed `{requester, recipient}` role pairs (default: EXHIBITOR↔GUEST)
+- **`roleBounds`** — per-role time windows (default: GUEST and EXHIBITOR both 10:05–14:10)
+- **`autoConfirm`** (default: false) — whether meetings auto-confirm
+- **`maxMeetingsPerUser`** — optional cap per user
+- **`meetingRequestMessage`** (default: true) — whether requesters can attach a message
+
+Config is stored in the `EventModule.config` JSON field for the `NETWORKING` module. The PUT endpoint validates all time ordering constraints and upserts the module record if it doesn't exist yet.
+Everything is wired up correctly. Here's a summary of what was created:
+
+**Backend** (`backend/src/routes/org/org-analytics.routes.ts`):
+- `GET /org/:orgId/events/:eventId/analytics` endpoint
+- Requires org membership (any role: OWNER, ADMIN, EDITOR, VIEWER)
+- Runs all queries in parallel via `Promise.all` for performance
+- Returns aggregated analytics: attendee counts by role, meeting status breakdown with confirmation rate, agenda items by category, favorites, speakers, sponsors, and news counts
+
+**Frontend types** (`web/lib/types.ts`):
+- Added `EventAnalytics` interface matching the backend response
+
+**Frontend API client** (`web/lib/api.ts`):
+- Added `api.org.analytics.get(orgId, eventId)` method
+
+**Frontend page** (`web/app/dashboard/events/[id]/analytics/page.tsx`):
+- 8 overview stat cards (attendees, meetings, agenda items, speakers, sponsors, news, favorites, confirmation rate)
+- Meeting status visualization with stacked progress bar + legend + confirmation rate
+- Attendees by role breakdown with progress bars
+- Agenda by category breakdown
+- Agenda overview panel (active/cancelled/favorites/avg favorites per item)
+- Refresh button, loading spinner, error state with retry
+- Follows existing design system: `#1E3548` cards, `#F4CB6A` gold text, `#C6A96E` secondary text, `#D8A84B` accents
+
+The "Analytics" tab was already defined in the event admin layout at `web/app/dashboard/events/[id]/layout.tsx:25`, so the page is automatically accessible via that tab.
+Created `backend/src/__tests__/orgAuth.test.ts` with comprehensive tests for the `requireOrgRole` middleware covering:
+
+1. **Unauthenticated requests** — missing auth header, invalid token, user not in DB
+2. **Non-member access** — 403 when user isn't an org member
+3. **Allowed roles** — all 4 roles (OWNER/ADMIN/EDITOR/VIEWER) pass through on endpoints allowing all roles
+4. **Insufficient role** — EDITOR/VIEWER rejected on OWNER+ADMIN-only endpoints; ADMIN/EDITOR/VIEWER rejected on OWNER-only endpoints
+5. **Database errors** — 500 on membership lookup failure
+6. **req.orgMember population** — verifies the middleware queries with the correct composite key and downstream handler executes
+7. **OWNER-only endpoint** — tests against `PATCH /org/:orgId/members/:memberId` which requires OWNER exclusively
+
+The tests follow the same patterns as the existing `auth.test.ts` (mock declarations before imports, supertest, jest.clearAllMocks in beforeEach).
+Both files are created. Here's what I've done:
+
+**`backend/src/middleware/moduleGuard.middleware.ts`** — New middleware with `requireModule(module)` factory:
+- Extracts `eventId` from route params
+- If no `eventId` → skips (calls `next()`)
+- If event has **zero** `EventModule` records → **legacy mode**, all routes allowed (backward compatibility)
+- If event has module records but the requested module is disabled or missing → **403**
+- If module is enabled → **`next()`**
+
+**`backend/src/__tests__/module-guard.test.ts`** — 17 test cases covering all scenarios from the task:
+1. **Legacy mode** — events with no `EventModule` records allow all 5 module types (AGENDA, NETWORKING, SPEAKERS, SPONSORS, NEWS)
+2. **Module enabled** — each module returns 200 (calls `next()`) when enabled
+3. **Module disabled** — each module returns 403 when explicitly disabled
+4. **Module record missing** — returns 403 when event has other modules but not the requested one
+5. **Edge cases** — no `eventId` in params skips guard; Prisma queries use correct compound key
+Created `backend/src/__tests__/organizations.test.ts` with integration tests covering all organization CRUD endpoints:
+
+**POST /org** (create) — 4 tests:
+- 201 on successful creation (with OWNER membership + token balance)
+- 400 for missing name
+- 400 for blank name
+- 401 unauthenticated
+
+**GET /org/me** (list user's orgs) — 3 tests:
+- 200 returns organizations with counts and token balance
+- 200 returns empty array when no memberships
+- 401 unauthenticated
+
+**GET /org/:orgId** (get details) — 5 tests:
+- 200 for OWNER
+- 200 for VIEWER (all 4 roles allowed)
+- 403 for non-member
+- 404 for nonexistent org
+- 401 unauthenticated
+
+**PATCH /org/:orgId** (update) — 5 tests:
+- 200 for OWNER
+- 200 for ADMIN
+- 403 for EDITOR (only OWNER/ADMIN)
+- 403 for VIEWER
+- 401 unauthenticated
+
+**GET /org/:orgId/members** (list members) — 2 tests:
+- 200 with member data
+- 403 for non-member
+
+**POST /org/:orgId/members** (invite) — 5 tests:
+- 201 successful invite
+- 400 missing email
+- 400 invalid role
+- 404 unregistered user
+- 409 already a member
+- 403 for insufficient role
+
+**PATCH /org/:orgId/members/:memberId** (update role) — 6 tests:
+- 200 OWNER updates role
+- 400 can't change own role
+- 400 can't demote last OWNER
+- 400 invalid role
+- 404 member not found
+- 403 for non-OWNER
+
+**DELETE /org/:orgId/members/:memberId** (remove) — 7 tests:
+- 204 OWNER removes member
+- 204 ADMIN removes member
+- 400 can't remove last OWNER
+- 404 member not found
+- 404 member from different org
+- 403 for EDITOR
+- 401 unauthenticated
+
+All tests follow the existing project patterns: supertest + jest mocks for firebase-admin/auth and prisma, with `createApp()`.
+Done. Here's what was created:
+
+1. **`backend/src/middleware/platformAdmin.middleware.ts`** — `requirePlatformAdmin` middleware that checks `req.user.isPlatformAdmin` (was specified in P0-17 but missing from this worktree)
+
+2. **`backend/src/routes/platform/platform.routes.ts`** — Platform admin routes (P12-01) with all endpoints:
+   - `GET /platform/stats` — platform-wide counts (orgs, events, users, tokens sold)
+   - `GET /platform/orgs` — paginated org list with search/tier filter
+   - `GET /platform/orgs/:orgId` — org detail with members, events, transactions
+   - `PATCH /platform/orgs/:orgId` — admin override of org fields
+   - `POST /platform/orgs/:orgId/grant-tokens` — grant bonus tokens
+   - `GET /platform/events` — all events across orgs with search/status/org filters
+
+3. **`backend/src/routes/index.ts`** — Mounted `platformRouter` at `/platform` (P12-02)
+
+All platform routes require `authMiddleware` + `requirePlatformAdmin` applied at the router level.
+All done. Here's what was created:
+
+**Files modified:**
+- `web/lib/types.ts` — Added `isPlatformAdmin` to `User`, plus `PlatformStats`, `PlatformOrg`, and `PlatformEvent` types
+- `web/lib/api.ts` — Added `api.platform.*` namespace with `stats()`, `orgs()`, `getOrg()`, `updateOrg()`, `grantTokens()`, `events()`
+
+**Files created:**
+- `web/app/admin/layout.tsx` — Platform admin layout with `isPlatformAdmin` guard (redirects non-admins to `/dashboard`), sidebar with Overview/Organizations nav, mobile hamburger menu, red "Admin" badge, "Back to Dashboard" link
+- `web/app/admin/page.tsx` — Stats dashboard showing Organizations, Events, Users, Tokens Sold, Revenue as stat cards, plus quick links
+- `web/app/admin/orgs/page.tsx` — Organization list with search, tier filter tabs (All/Starter/Pro/Enterprise), table showing org name/slug, tier badge, token balance, event count, member count, and a "Grant Tokens" button that opens a modal for granting bonus tokens
+
+All pages follow the existing dashboard design patterns (same color tokens, component structure, and UI conventions).
+The ternary will correctly infer as `'MEETING_CONFIRMED' | 'MEETING_CANCELLED'` which are valid string literals matching `WebhookEventType` — TypeScript handles this fine since both branches are string literal types.
+
+All files are consistent and complete. Here's a summary of everything implemented:
+
+---
+
+## FUTURE-08: Webhook/Integration System — Complete
+
+### New files created:
+1. **`backend/prisma/schema.prisma`** — Added `WebhookEventType` enum, `WebhookDeliveryStatus` enum, `WebhookEndpoint` model, and `WebhookDelivery` model
+2. **`backend/prisma/migrations/20260405100000_add_webhook_system/migration.sql`** — Database migration
+3. **`backend/src/services/webhook.service.ts`** — Core webhook dispatch engine with:
+   - `dispatchWebhook()` — fire-and-forget dispatch (never blocks request path)
+   - HMAC-SHA256 payload signing (`X-Webhook-Signature` header)
+   - 10s delivery timeout with AbortController
+   - Delivery logging to `webhook_deliveries` table
+4. **`backend/src/routes/org/org-webhooks.routes.ts`** — Full CRUD for webhook endpoints:
+   - `GET /org/:orgId/webhooks` — list endpoints
+   - `POST /org/:orgId/webhooks` — create (returns signing secret)
+   - `PATCH /org/:orgId/webhooks/:webhookId` — update
+   - `POST /org/:orgId/webhooks/:webhookId/rotate-secret` — rotate signing secret
+   - `DELETE /org/:orgId/webhooks/:webhookId` — remove
+   - `GET /org/:orgId/webhooks/:webhookId/deliveries` — paginated delivery log
+
+### Modified files:
+5. **`backend/src/routes/index.ts`** — Registered `orgWebhooksRouter`
+6. **`backend/src/routes/meetings.routes.ts`** — Dispatches `MEETING_CONFIRMED` / `MEETING_CANCELLED` webhooks
+7. **`backend/src/routes/public/public.routes.ts`** — Dispatches `ATTENDEE_REGISTERED` on self-registration
+8. **`backend/src/routes/admin.routes.ts`** — Dispatches `ATTENDEE_REGISTERED` on admin enrollment
+9. **`backend/src/routes/qr.routes.ts`** — Dispatches `CHECKIN_RECORDED` on QR scan
+
+### Webhook event types:
+| Event Type | Trigger |
+|---|---|
+| `ATTENDEE_REGISTERED` | Public registration or admin enrollment |
+| `MEETING_CONFIRMED` | Meeting confirmed (manual or auto-confirm) |
+| `MEETING_CANCELLED` | Meeting cancelled by either party |
+| `CHECKIN_RECORDED` | QR code scanned by staff |
+
+### Security:
+- Org OWNER/ADMIN only for webhook management
+- HMAC-SHA256 signatures on every delivery
+- Secret rotation endpoint
+- Secret only returned on creation (not on GET list)
+All tasks complete. Here's a summary of what was implemented:
+
+## FUTURE-07: Multi-language / i18n Support
+
+### New files created:
+- **`web/lib/i18n/index.ts`** — Core i18n module with `translate()` function, locale types, and date locale mapping (`en-GB`, `sr-Latn-ME`, `it-IT`)
+- **`web/lib/i18n/en.json`** — English translations (default)
+- **`web/lib/i18n/me.json`** — Montenegrin (Crnogorski) translations
+- **`web/lib/i18n/it.json`** — Italian translations
+- **`web/context/I18nContext.tsx`** — React context + `useTranslation()` hook with localStorage persistence
+- **`web/components/ui/LanguageSwitcher.tsx`** — Flag-based dropdown language picker (🇬🇧/🇲🇪/🇮🇹)
+
+### Files updated (i18n integration):
+- **`web/app/layout.tsx`** — Added `I18nProvider` wrapper, `latin-ext` font subset
+- **`web/app/login/page.tsx`** — All strings via `t()`, language switcher added
+- **`web/app/e/[slug]/login/page.tsx`** — Same for white-label login
+- **`web/app/events/page.tsx`** — Role labels, dates, headings via `t()` + `dateLocale`
+- **`web/app/e/[slug]/layout.tsx`** — 404 text via `t()`
+- **`web/components/layout/TopBar.tsx`** — aria-labels + language switcher in top bar
+- **`web/components/layout/BottomNav.tsx`** — Tab labels via `t()`
+- **`web/components/event/EventHomeContent.tsx`** — Section headings, CTA text, dates
+- **`web/components/event/AgendaContent.tsx`** — Day labels, location filter, empty states
+- **`web/components/event/NetworkingContent.tsx`** — All tabs, buttons, attendee detail, role labels
+- **`web/components/event/QrContent.tsx`** — Role, job title label, footer text
+- **`web/components/event/SponsorsContent.tsx`** — Tier labels, close button
+- **`web/components/event/ModuleDisabled.tsx`** — Disabled message via `t()` with interpolation
+- **`web/components/agenda/AgendaDetailSheet.tsx`** — Date, schedule/speakers headings, close
+- **`web/components/networking/MeetingDetailSheet.tsx`** — All labels, actions, error messages
+- **`web/components/networking/NewMeetingSheet.tsx`** — Step labels, attendee search, booking flow
+- **`web/components/profile/PersonalProfileSheet.tsx`** — Privacy, info labels, delete confirm
+- **`web/components/profile/CompanyProfileSheet.tsx`** — Profile fields, placeholders
+- **`web/components/qr/QrScannerSheet.tsx`** — Scan title, status messages, role labels
+
+### How it works:
+1. Language preference saved to `localStorage` (`ltsm-locale`)
+2. `useTranslation()` hook provides `t(key, params?)` for string lookup and `dateLocale` for date formatting
+3. Supports `{{var}}` interpolation in translation strings
+4. All `toLocaleDateString()` calls now use the i18n-aware `dateLocale` (en-GB / sr-Latn-ME / it-IT)
+5. Language switcher appears in TopBar (inside events) and on login pages
+Changes made to `QrContent.tsx`:
+
+1. **QR code color** — Already `#1E293B` on line 22, no change needed.
+2. **`bg-white` card** — Already white, no change needed.
+3. **Badge appearance** — Changed `border-2` to `border` (2px → 1px) for a thinner, more refined outlined pill that better suits the text-xs badge size on the white QR card.
+4. **Perforation cutouts** — Verified `bg-background` uses `var(--color-background, #E8E0D4)` via the Tailwind config, which automatically matches the page background through CSS custom properties.
+No changes needed. The file already has all the correct fallback values:
+- `--color-gold` fallback: `#2D6B73` (already updated)
+- `--color-action-btn` fallback: `#2D6B73` (already updated)
+- `--color-btn-gold` fallback: `#FFFFFF` (already updated)
+- No `border-white/5` or `bg-white/5` patterns present
+
+This file is already up to date.
+The colors are already correct — `HeartIcon` uses `stroke="#64748B"` and `fill="#E85D4A"` (when filled), and both `CalendarIcon` and `PinIcon` use `stroke="#64748B"`. The fix described in the task has already been applied. No changes needed.
+Done. The agenda items container at line 120 now uses a responsive grid: single column on mobile, 2 columns at `md`, and 3 columns at `lg`.

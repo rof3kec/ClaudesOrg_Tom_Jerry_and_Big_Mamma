@@ -1,0 +1,1364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The House</title>
+<style>
+/* ── Reset + Variables ─────────────────────────────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg-0:#0d1117;--bg-1:#161b22;--bg-2:#21262d;--bg-3:#30363d;
+  --border:#30363d;
+  --text-0:#e6edf3;--text-1:#c9d1d9;--text-2:#8b949e;--text-3:#484f58;
+  --blue:#58a6ff;--green:#3fb950;--yellow:#d29922;--red:#f85149;
+  --orange:#d18616;--purple:#bc8cff;--pink:#f778ba;
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --mono:'SF Mono','Cascadia Code','Fira Code',Consolas,monospace;
+  --sidebar-w:340px;--radius:8px;
+}
+html,body{height:100%;background:var(--bg-0);color:var(--text-1);font-family:var(--font);font-size:14px}
+
+/* ── Layout ────────────────────────────────────────────────────────────────── */
+#app{display:grid;grid-template-columns:var(--sidebar-w) 1fr;height:100vh;overflow:hidden}
+
+/* ── Sidebar ───────────────────────────────────────────────────────────────── */
+#sidebar{background:var(--bg-1);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.sidebar-header{padding:20px 20px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.sidebar-header h1{font-size:18px;font-weight:700;color:var(--text-0)}
+.sidebar-header .subtitle{font-size:12px;color:var(--text-2);margin-top:2px}
+.sidebar-scroll{flex:1;overflow-y:auto}
+.sidebar-section{padding:14px 16px;border-bottom:1px solid var(--border)}
+.sidebar-section h3{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-2);margin-bottom:10px}
+.section-header{display:flex;justify-content:space-between;align-items:center}
+.section-header h3{margin-bottom:0}
+
+/* ── Location items ────────────────────────────────────────────────────────── */
+.loc-item{display:flex;align-items:center;padding:8px 12px;border-radius:var(--radius);cursor:pointer;margin-bottom:2px;transition:background .15s}
+.loc-item:hover{background:var(--bg-2)}
+.loc-item.active{background:var(--bg-3)}
+.loc-dot{width:8px;height:8px;border-radius:50%;margin-right:10px;flex-shrink:0}
+.loc-dot.running{background:var(--green);box-shadow:0 0 6px var(--green)}
+.loc-dot.stopped{background:var(--text-3)}
+.loc-name{flex:1;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.loc-counts{font-size:11px;color:var(--text-2);margin-left:8px;white-space:nowrap}
+.loc-remove{opacity:0;border:none;background:none;color:var(--text-3);cursor:pointer;font-size:16px;padding:0 4px;margin-left:4px;transition:opacity .15s}
+.loc-item:hover .loc-remove{opacity:1}
+.loc-remove:hover{color:var(--red)}
+.btn-add-loc{width:100%;padding:8px;border:1px dashed var(--border);border-radius:var(--radius);background:transparent;color:var(--text-2);font-size:12px;cursor:pointer;margin-top:8px;transition:all .15s}
+.btn-add-loc:hover{border-color:var(--text-2);color:var(--text-0)}
+
+/* ── Agent items ───────────────────────────────────────────────────────────── */
+.agent-item{display:flex;align-items:center;padding:6px 4px;border-radius:8px;margin-bottom:2px}
+.agent-item:hover{background:var(--bg-2)}
+.agent-char{width:48px;height:48px;flex-shrink:0;display:flex;align-items:center;justify-content:center;position:relative}
+.agent-char svg{width:44px;height:44px;overflow:visible}
+.agent-info{flex:1;min-width:0;margin-left:4px}
+.agent-name{font-size:13px;font-weight:500;color:var(--text-0)}
+.agent-detail{font-size:11px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-status{width:8px;height:8px;border-radius:50%;margin-left:8px;flex-shrink:0}
+.status-running{background:var(--green);box-shadow:0 0 4px var(--green)}
+.status-idle{background:var(--text-3)}
+.status-checking{background:var(--yellow);box-shadow:0 0 4px var(--yellow)}
+.status-passed{background:var(--green)}
+.status-passed_with_warnings{background:var(--yellow)}
+.status-failed{background:var(--red);box-shadow:0 0 4px var(--red)}
+.status-hibernating{background:var(--blue)}
+.status-offline{background:var(--bg-3)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.status-running,.status-checking{animation:pulse 2s ease-in-out infinite}
+
+/* ── Character animations ─────────────────────────────────────────────────── */
+
+/* Shared keyframes */
+@keyframes char-bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+@keyframes char-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
+@keyframes char-scurry{0%,100%{transform:translateX(0) rotate(0)}25%{transform:translateX(-2px) rotate(-3deg)}75%{transform:translateX(2px) rotate(3deg)}}
+@keyframes char-sniff{0%,100%{transform:translateY(0)}30%{transform:translateY(2px)}60%{transform:translateY(-1px)}}
+@keyframes char-nod{0%,100%{transform:rotate(0)}30%{transform:rotate(-3deg)}70%{transform:rotate(3deg)}}
+@keyframes char-wag{0%,100%{transform:rotate(-8deg)}50%{transform:rotate(12deg)}}
+@keyframes zzz-float{0%{opacity:0;transform:translate(0,0)}30%{opacity:1}100%{opacity:0;transform:translate(3px,-10px)}}
+@keyframes ear-twitch{0%,90%,100%{transform:scaleY(1)}95%{transform:scaleY(.85)}}
+@keyframes eye-look{0%,40%,100%{transform:translateX(0)}45%,55%{transform:translateX(1.5px)}60%,80%{transform:translateX(-1.5px)}}
+@keyframes whisker-twitch{0%,100%{transform:rotate(0)}25%{transform:rotate(2deg)}75%{transform:rotate(-2deg)}}
+@keyframes foot-tap{0%,100%{transform:scaleY(1)}50%{transform:scaleY(.9)}}
+
+/* Default: hide sleeping/zzz elements */
+.char .eyes-closed,.char .zzz,.char .tongue-out{display:none}
+
+/* ── Tom states ── */
+.char-tom.st-running svg{animation:char-bounce .7s ease infinite}
+.char-tom.st-running .tom-pupils{animation:eye-look 3s ease infinite}
+.char-tom.st-running .tom-whiskers{animation:whisker-twitch 1.2s ease infinite}
+.char-tom.st-running .tom-tail{animation:char-wag .6s ease infinite;transform-origin:0% 100%}
+.char-tom.st-idle svg{animation:char-breathe 3.5s ease infinite}
+.char-tom.st-idle .tom-pupils{animation:eye-look 5s ease infinite}
+.char-tom.st-hibernating .eyes-open{display:none}
+.char-tom.st-hibernating .eyes-closed{display:block !important}
+.char-tom.st-hibernating .zzz{display:block !important}
+.char-tom.st-hibernating .zzz-1{animation:zzz-float 2.2s ease infinite}
+.char-tom.st-hibernating .zzz-2{animation:zzz-float 2.2s ease .6s infinite}
+.char-tom.st-hibernating svg{animation:char-breathe 4s ease infinite}
+.char-tom.st-offline svg{filter:grayscale(1) opacity(.25)}
+
+/* ── Jerry states ── */
+.char-jerry.st-running svg{animation:char-scurry .35s ease infinite}
+.char-jerry.st-running .jerry-ears{animation:ear-twitch 2s ease infinite}
+.char-jerry.st-idle svg{animation:char-breathe 3s ease infinite}
+.char-jerry.st-idle .jerry-ears{animation:ear-twitch 4s ease infinite}
+.char-jerry.st-offline svg{filter:grayscale(1) opacity(.25)}
+
+/* ── Big Mamma states ── */
+.char-mamma.st-running svg{animation:char-nod 1.2s ease infinite}
+.char-mamma.st-running .mamma-foot{animation:foot-tap .6s ease infinite;transform-origin:50% 100%}
+.char-mamma.st-idle svg{animation:char-breathe 4s ease infinite}
+.char-mamma.st-offline svg{filter:grayscale(1) opacity(.25)}
+
+/* ── Spike states ── */
+.char-spike.st-checking svg{animation:char-sniff .5s ease infinite}
+.char-spike.st-checking .spike-nose{animation:char-sniff .4s ease infinite}
+.char-spike.st-passed .tongue-out{display:block !important}
+.char-spike.st-passed svg{animation:char-breathe 2s ease infinite}
+.char-spike.st-passed .spike-tail{animation:char-wag .4s ease infinite;transform-origin:0% 50%}
+.char-spike.st-failed .spike-brows{transform:rotate(8deg);transform-origin:center}
+.char-spike.st-idle svg{animation:char-breathe 3.5s ease infinite}
+.char-spike.st-offline svg{filter:grayscale(1) opacity(.25)}
+
+/* ── Task items ────────────────────────────────────────────────────────────── */
+#tasks-list{padding:4px 0}
+.wip-tags{display:flex;flex-wrap:wrap;gap:4px;padding:2px 8px}
+.wip-tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:10px;font-size:11px;font-family:var(--mono);font-weight:600;background:rgba(210,153,34,.15);color:var(--yellow);border:1px solid rgba(210,153,34,.25);cursor:default}
+.wip-tag:hover{background:rgba(210,153,34,.25)}
+
+/* ── Add task ──────────────────────────────────────────────────────────────── */
+.add-task{display:flex;gap:6px;margin-top:10px}
+.add-task input{flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-0);color:var(--text-1);font-size:12px;outline:none;font-family:var(--font)}
+.add-task input:focus{border-color:var(--blue)}
+.add-task input::placeholder{color:var(--text-3)}
+
+/* ── Buttons ───────────────────────────────────────────────────────────────── */
+.btn{padding:8px 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-2);color:var(--text-1);font-size:13px;cursor:pointer;transition:all .15s;font-family:var(--font)}
+.btn:hover{background:var(--bg-3)}
+.btn-accent{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn-accent:hover{opacity:.9}
+.btn-icon{border:none;background:none;color:var(--text-2);font-size:20px;cursor:pointer;padding:0 4px;line-height:1;transition:color .15s}
+.btn-icon:hover{color:var(--text-0)}
+.btn-start{background:rgba(63,185,80,.12);border-color:var(--green);color:var(--green)}
+.btn-start:hover{background:rgba(63,185,80,.22)}
+.btn-stop{background:rgba(248,81,73,.12);border-color:var(--red);color:var(--red)}
+.btn-stop:hover{background:rgba(248,81,73,.22)}
+.controls{display:flex;gap:8px}
+.controls .btn{flex:1}
+.btn-kill{width:100%;margin-top:8px;padding:10px 16px;border:2px solid var(--red);border-radius:var(--radius);background:rgba(248,81,73,.08);color:var(--red);font-size:13px;font-weight:700;letter-spacing:.5px;cursor:pointer;transition:all .2s;font-family:var(--font);text-transform:uppercase}
+.btn-kill:hover{background:rgba(248,81,73,.25);box-shadow:0 0 16px rgba(248,81,73,.3)}
+.btn-kill:active{background:var(--red);color:#fff}
+
+/* ── Main area ─────────────────────────────────────────────────────────────── */
+#main{display:flex;flex-direction:column;overflow:hidden;background:var(--bg-0)}
+
+/* Empty state */
+#empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-2);gap:16px}
+.empty-icon{font-size:72px;opacity:.6}
+#empty-state h2{font-size:20px;font-weight:600;color:var(--text-1)}
+#empty-state p{font-size:14px;color:var(--text-2)}
+
+/* ── Log view ──────────────────────────────────────────────────────────────── */
+#log-view{display:none;flex-direction:column;height:100%;overflow:hidden}
+.log-header{padding:14px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;background:var(--bg-0)}
+.log-header h2{font-size:15px;font-weight:600;color:var(--text-0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-right:16px}
+.log-filters{display:flex;gap:4px;flex-shrink:0}
+.filter-btn{padding:5px 14px;border:1px solid transparent;border-radius:20px;background:transparent;color:var(--text-2);font-size:12px;cursor:pointer;transition:all .15s;white-space:nowrap;font-family:var(--font)}
+.filter-btn:hover{color:var(--text-0);background:var(--bg-2)}
+.filter-btn.active{color:var(--text-0);background:var(--bg-2);border-color:var(--border)}
+
+/* Log content */
+.log-content{flex:1;overflow-y:auto;padding:4px 0;font-family:var(--mono);font-size:12.5px;line-height:1.65}
+.log-line{padding:1px 24px;display:flex;gap:10px;white-space:pre-wrap;word-break:break-word}
+.log-line:hover{background:rgba(255,255,255,.03)}
+.log-time{color:var(--text-3);flex-shrink:0;font-size:11.5px;min-width:58px}
+.log-agent{flex-shrink:0;font-weight:600;font-size:11px;min-width:85px;text-align:right}
+.log-agent.big-mamma{color:var(--purple)}
+.log-agent.tom{color:var(--blue)}
+.log-agent.spike{color:var(--orange)}
+.log-msg{color:var(--text-1);flex:1}
+.log-continuation{padding-left:24px}
+.log-continuation .log-msg{color:var(--text-2)}
+.log-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-3);font-family:var(--font);font-size:13px}
+
+/* ── Task color legend ────────────────────────────────────────────────── */
+.task-legend{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;border-bottom:1px solid var(--border);background:var(--bg-1);flex-shrink:0}
+.task-legend:empty{display:none}
+.task-legend-item{display:inline-flex;align-items:center;gap:5px;padding:3px 10px 3px 0;border-radius:4px;font-size:11px;font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px;background:rgba(255,255,255,.04);cursor:default}
+.task-legend-dot{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.task-legend-num{font-weight:700}
+.task-legend-desc{color:var(--text-2);overflow:hidden;text-overflow:ellipsis}
+
+/* ── Modal ─────────────────────────────────────────────────────────────────── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:100}
+.modal{background:var(--bg-1);border:1px solid var(--border);border-radius:12px;padding:24px;width:440px;max-width:90vw}
+.modal h3{font-size:16px;margin-bottom:18px;color:var(--text-0)}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:12px;color:var(--text-2);margin-bottom:5px}
+.form-group input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-0);color:var(--text-1);font-size:13px;outline:none;font-family:var(--font)}
+.form-group input:focus{border-color:var(--blue)}
+.form-group input::placeholder{color:var(--text-3)}
+.form-error{font-size:12px;color:var(--red);margin-top:6px;display:none}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+
+/* ── Toast ─────────────────────────────────────────────────────────────────── */
+.toast{position:fixed;bottom:24px;right:24px;padding:10px 20px;border-radius:8px;font-size:13px;z-index:200;animation:slideUp .3s ease;box-shadow:0 4px 16px rgba(0,0,0,.4);font-family:var(--font)}
+.toast-success{background:var(--green);color:#fff}
+.toast-error{background:var(--red);color:#fff}
+.toast-info{background:var(--bg-2);color:var(--text-0);border:1px solid var(--border)}
+@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+/* ── Connection indicator ──────────────────────────────────────────────────── */
+.conn-status{position:fixed;bottom:8px;left:8px;font-size:11px;color:var(--text-3);display:flex;align-items:center;gap:5px;z-index:50}
+.conn-dot{width:6px;height:6px;border-radius:50%}
+.conn-dot.ok{background:var(--green)}
+.conn-dot.err{background:var(--red);animation:pulse 1s ease-in-out infinite}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg-3);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-3)}
+
+/* ── Badge ─────────────────────────────────────────────────────────────────── */
+.badge{font-size:11px;color:var(--text-2);font-weight:400}
+
+/* ── Tasks Editor Panel ───────────────────────────────────────────────── */
+#tasks-editor{position:fixed;top:0;right:0;width:0;height:100vh;background:var(--bg-1);border-left:1px solid var(--border);z-index:90;display:flex;flex-direction:column;transition:width .25s ease;overflow:hidden}
+#tasks-editor.open{width:480px}
+.editor-header{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;min-width:480px}
+.editor-header h3{font-size:15px;font-weight:600;color:var(--text-0);white-space:nowrap}
+.editor-actions{display:flex;gap:8px;align-items:center}
+.editor-status{font-size:11px;color:var(--text-3);margin-right:8px;white-space:nowrap}
+.editor-status.unsaved{color:var(--yellow)}
+#tasks-textarea{flex:1;width:100%;min-width:480px;padding:16px 20px;background:var(--bg-0);color:var(--text-1);border:none;outline:none;font-family:var(--mono);font-size:13px;line-height:1.7;resize:none;tab-size:4}
+#tasks-textarea::placeholder{color:var(--text-3)}
+.editor-footer{padding:10px 20px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;min-width:480px}
+.editor-hint{font-size:11px;color:var(--text-3)}
+.editor-hint kbd{background:var(--bg-3);border:1px solid var(--border);border-radius:3px;padding:1px 5px;font-family:var(--mono);font-size:10px}
+.btn-edit-tasks{padding:5px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-2);color:var(--text-2);font-size:11px;cursor:pointer;transition:all .15s;font-family:var(--font);white-space:nowrap}
+.btn-edit-tasks:hover{background:var(--bg-3);color:var(--text-0);border-color:var(--text-3)}
+
+/* ── Clear Logs button ─────────────────────────────────────────────────── */
+.btn-clear-logs{padding:5px 12px;border:1px solid var(--border);border-radius:20px;background:transparent;color:var(--text-2);font-size:12px;cursor:pointer;transition:all .15s;font-family:var(--font);white-space:nowrap}
+.btn-clear-logs:hover{background:rgba(248,81,73,.12);border-color:var(--red);color:var(--red)}
+
+/* ── Inline SVG icons ─────────────────────────────────────────────── */
+.icon-inline{display:inline-flex;align-items:center;vertical-align:middle;line-height:0;flex-shrink:0}
+.filter-char{display:inline-block;vertical-align:middle;margin-right:3px;line-height:0}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <h1><svg class="icon-inline" viewBox="0 0 24 24" width="22" height="22"><path d="M12,2.5 L1,12 L4,12 L4,21.5 L20,21.5 L20,12 L23,12 Z" fill="#E8443A"/><rect x="5" y="12" width="14" height="9.5" fill="#F5D76E"/><rect x="10" y="15" width="4" height="6.5" rx=".5" fill="#8B6242"/><circle cx="13" cy="18.5" r=".5" fill="#F5D76E"/><rect x="6.5" y="13.5" width="3" height="3" rx=".3" fill="#58a6ff" opacity=".85"/><rect x="14.5" y="13.5" width="3" height="3" rx=".3" fill="#58a6ff" opacity=".85"/></svg> The House</h1>
+      <div class="subtitle">Tom, Jerry &amp; Big Mamma</div>
+    </div>
+    <div class="sidebar-scroll">
+
+      <div class="sidebar-section">
+        <div class="section-header">
+          <h3>Locations</h3>
+          <button class="btn-icon" onclick="showAddLocation()" title="Add location">+</button>
+        </div>
+        <div id="locations-list"></div>
+        <button class="btn-add-loc" onclick="showAddLocation()">+ Add Location</button>
+      </div>
+
+      <div class="sidebar-section" id="agents-section" style="display:none">
+        <h3>Agents</h3>
+        <div id="agents-list" style="max-height:320px;overflow-y:auto"></div>
+      </div>
+
+      <div class="sidebar-section" id="tasks-section" style="display:none">
+        <div class="section-header">
+          <h3>Tasks</h3>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span id="task-counts" class="badge"></span>
+            <button class="btn-edit-tasks" onclick="openTasksEditor()">Edit Tasks</button>
+          </div>
+        </div>
+        <div id="tasks-list"></div>
+        <div class="add-task">
+          <input type="text" id="new-task" placeholder="Add a task..." onkeydown="if(event.key==='Enter')addTask()">
+          <button class="btn-icon" onclick="addTask()" title="Add task">+</button>
+        </div>
+      </div>
+
+      <div class="sidebar-section" id="controls-section" style="display:none">
+        <div class="controls">
+          <button id="btn-start" class="btn btn-start" onclick="startHouse()"><svg class="icon-inline" viewBox="0 0 12 14" width="10" height="12"><polygon points="1,0 12,7 1,14" fill="currentColor"/></svg> Start</button>
+          <button id="btn-stop" class="btn btn-stop" onclick="stopHouse()"><svg class="icon-inline" viewBox="0 0 10 10" width="10" height="10"><rect width="10" height="10" rx="1" fill="currentColor"/></svg> Stop</button>
+        </div>
+        <button id="btn-kill" class="btn-kill" onclick="killHouse()"><svg class="icon-inline" viewBox="0 0 12 16" width="12" height="16"><path d="M8,0 L3,9 L6,9 L4,16 L11,6 L7,6 Z" fill="currentColor"/></svg> Kill Switch</button>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- ── Main content ────────────────────────────────────────────────────── -->
+  <main id="main">
+    <div id="empty-state">
+      <div class="empty-icon"><svg viewBox="0 0 24 24" width="72" height="72" opacity=".6"><path d="M12,2.5 L1,12 L4,12 L4,21.5 L20,21.5 L20,12 L23,12 Z" fill="#E8443A"/><rect x="5" y="12" width="14" height="9.5" fill="#F5D76E"/><rect x="10" y="15" width="4" height="6.5" rx=".5" fill="#8B6242"/><circle cx="13" cy="18.5" r=".5" fill="#F5D76E"/><rect x="6.5" y="13.5" width="3" height="3" rx=".3" fill="#58a6ff" opacity=".85"/><line x1="8" y1="13.5" x2="8" y2="16.5" stroke="#F5D76E" stroke-width=".3"/><line x1="6.5" y1="15" x2="9.5" y2="15" stroke="#F5D76E" stroke-width=".3"/><rect x="14.5" y="13.5" width="3" height="3" rx=".3" fill="#58a6ff" opacity=".85"/><line x1="16" y1="13.5" x2="16" y2="16.5" stroke="#F5D76E" stroke-width=".3"/><line x1="14.5" y1="15" x2="17.5" y2="15" stroke="#F5D76E" stroke-width=".3"/><rect x="17" y="5" width="2.5" height="7" rx=".3" fill="#C9A96E"/></svg></div>
+      <h2>Welcome to The House</h2>
+      <p>Add a project location to get started.</p>
+      <button class="btn btn-accent" onclick="showAddLocation()">+ Add Location</button>
+    </div>
+
+    <div id="log-view">
+      <div class="log-header">
+        <h2 id="log-title">Logs</h2>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="log-filters" id="log-filters"></div>
+          <button class="btn-clear-logs" onclick="clearLogs()" title="Clear log files"><svg class="icon-inline" viewBox="0 0 12 14" width="11" height="13" style="margin-right:3px"><path d="M1,3 L11,3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4.5,1 L7.5,1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M2,3 L2.8,12.5 Q2.9,13.5 3.8,13.5 L8.2,13.5 Q9.1,13.5 9.2,12.5 L10,3" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>Clear</button>
+        </div>
+      </div>
+      <div id="task-legend" class="task-legend"></div>
+      <div id="log-content" class="log-content"></div>
+    </div>
+  </main>
+</div>
+
+<!-- ── Add Location Modal ──────────────────────────────────────────────────── -->
+<div id="modal-overlay" class="modal-overlay" onclick="closeModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3>Add Location</h3>
+    <div class="form-group">
+      <label>Project Path</label>
+      <input type="text" id="loc-path" placeholder="D:/Projects/MyApp" onkeydown="if(event.key==='Enter')addLocation()">
+    </div>
+    <div class="form-group">
+      <label>Display Name <span style="color:var(--text-3)">(optional)</span></label>
+      <input type="text" id="loc-name" placeholder="MyApp" onkeydown="if(event.key==='Enter')addLocation()">
+    </div>
+    <div class="form-error" id="modal-error"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-accent" onclick="addLocation()">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Start House Modal ───────────────────────────────────────────────────── -->
+<div id="start-modal-overlay" class="modal-overlay" onclick="closeStartModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3 id="start-modal-title">Start The House</h3>
+    <div class="form-group">
+      <label>Branch</label>
+      <input type="text" id="start-branch" placeholder="my-feature-branch" onkeydown="if(event.key==='Enter')confirmStartHouse()">
+    </div>
+    <div class="form-group">
+      <label>Jerries <span style="color:var(--text-3)">(parallel workers)</span></label>
+      <input type="number" id="start-jerries" value="2" min="0" max="20" onkeydown="if(event.key==='Enter')confirmStartHouse()">
+    </div>
+    <div class="form-error" id="start-modal-error"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeStartModal()">Cancel</button>
+      <button class="btn btn-start" onclick="confirmStartHouse()"><svg class="icon-inline" viewBox="0 0 12 14" width="10" height="12"><polygon points="1,0 12,7 1,14" fill="currentColor"/></svg> Start</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Tasks Editor Panel ──────────────────────────────────────────────────── -->
+<div id="tasks-editor">
+  <div class="editor-header">
+    <h3 id="editor-title">TASKS.md</h3>
+    <div class="editor-actions">
+      <span class="editor-status" id="editor-status"></span>
+      <button class="btn btn-accent" onclick="saveTasksEditor()" style="padding:5px 14px;font-size:12px">Save</button>
+      <button class="btn-icon" onclick="closeTasksEditor()" title="Close" style="font-size:22px">&times;</button>
+    </div>
+  </div>
+  <textarea id="tasks-textarea" placeholder="# Tasks&#10;&#10;[ ] Your first task&#10;[ ] Another task" spellcheck="false"></textarea>
+  <div class="editor-footer">
+    <div class="editor-hint"><kbd>Ctrl+S</kbd> save &middot; <kbd>Esc</kbd> close</div>
+    <div class="editor-hint">Prefixes: [ ] pending &middot; [!] running &middot; [x] done &middot; [-] failed</div>
+  </div>
+</div>
+
+<!-- ── Connection status ───────────────────────────────────────────────────── -->
+<div class="conn-status">
+  <div class="conn-dot ok" id="conn-dot"></div>
+  <span id="conn-label">Connected</span>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+
+let locations = [];
+let selectedIdx = -1;
+let currentState = null;
+let logFilter = 'all';
+let logEtag = '';
+let connected = true;
+
+// ── Mini character icons for filter buttons ───────────────────────────────────
+
+function iconMammaMini() {
+  return '<svg class="filter-char" viewBox="0 0 20 20" width="16" height="16">'
+    + '<path d="M4,11 Q3,4 10,2 Q17,4 16,11" fill="#E8443A"/>'
+    + '<ellipse cx="10" cy="13" rx="7" ry="6" fill="#8B6242"/>'
+    + '<circle cx="7.5" cy="12.5" r="1.2" fill="white"/><circle cx="12.5" cy="12.5" r="1.2" fill="white"/>'
+    + '<circle cx="7.8" cy="12.7" r=".7" fill="#2B1810"/><circle cx="12.8" cy="12.7" r=".7" fill="#2B1810"/>'
+    + '<circle cx="3.5" cy="14" r="1.2" fill="#F5D76E"/><circle cx="16.5" cy="14" r="1.2" fill="#F5D76E"/>'
+    + '</svg>';
+}
+
+function iconTomMini() {
+  return '<svg class="filter-char" viewBox="0 0 20 20" width="16" height="16">'
+    + '<polygon points="4,9 2,1 8,7" fill="#8BAAC7"/><polygon points="5,8 3.5,3 7,7" fill="#F5A6B8"/>'
+    + '<polygon points="16,9 18,1 12,7" fill="#8BAAC7"/><polygon points="15,8 16.5,3 13,7" fill="#F5A6B8"/>'
+    + '<ellipse cx="10" cy="12" rx="7" ry="6" fill="#8BAAC7"/>'
+    + '<ellipse cx="7.5" cy="11" rx="1.5" ry="1.7" fill="white"/><ellipse cx="12.5" cy="11" rx="1.5" ry="1.7" fill="white"/>'
+    + '<circle cx="8" cy="11.3" r=".9" fill="#2B3A4E"/><circle cx="13" cy="11.3" r=".9" fill="#2B3A4E"/>'
+    + '<path d="M9.3,14 L10,15.5 L10.7,14 Z" fill="#F5A6B8"/>'
+    + '</svg>';
+}
+
+function iconSpikeMini() {
+  return '<svg class="filter-char" viewBox="0 0 20 20" width="16" height="16">'
+    + '<rect x="3" y="4" width="14" height="12" rx="6" fill="#C9A96E"/>'
+    + '<ellipse cx="3" cy="8" rx="2.5" ry="3.5" fill="#A08050"/><ellipse cx="17" cy="8" rx="2.5" ry="3.5" fill="#A08050"/>'
+    + '<ellipse cx="10" cy="13" rx="5" ry="3.5" fill="#DFC088"/>'
+    + '<circle cx="7" cy="9" r="1.5" fill="white"/><circle cx="13" cy="9" r="1.5" fill="white"/>'
+    + '<circle cx="7.3" cy="9.3" r=".9" fill="#2B1810"/><circle cx="13.3" cy="9.3" r=".9" fill="#2B1810"/>'
+    + '<ellipse cx="10" cy="11.5" rx="2" ry="1.5" fill="#3D2B1F"/>'
+    + '<rect x="4" y="15" width="12" height="2.5" rx="1" fill="#D43D3D"/>'
+    + '</svg>';
+}
+
+const FILTERS = [
+  { id: 'all',       label: 'All' },
+  { id: 'big_mamma', label: iconMammaMini() + ' Big Mamma' },
+  { id: 'tom',       label: iconTomMini() + ' Tom' },
+  { id: 'spike',     label: iconSpikeMini() + ' Spike' },
+];
+
+const STATUS_ICONS = { pending: '\u25CB', in_progress: '\u25D0', done: '\u2713', failed: '\u2717' };
+const STATUS_COLORS = {
+  pending: 'var(--text-1)', in_progress: 'var(--yellow)',
+  done: 'var(--green)',     failed: 'var(--red)',
+};
+const STATUS_ORDER = { in_progress: 0, pending: 1, failed: 2, done: 3 };
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+const $ = id => document.getElementById(id);
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    return { error: res.ok ? 'Invalid response from server' : 'Server error (' + res.status + ')' };
+  }
+}
+
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = 'toast toast-' + type;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; }, 2500);
+  setTimeout(() => el.remove(), 2800);
+}
+
+// ── Render: Locations ──────────────────────────────────────────────────────────
+
+function renderLocations(overview) {
+  const el = $('locations-list');
+  if (locations.length === 0) {
+    el.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:8px 0">No locations added yet</div>';
+    return;
+  }
+  el.innerHTML = locations.map((loc, i) => {
+    const ov = overview ? overview.find(o => o.path === loc.path) : null;
+    const running = ov ? ov.running : false;
+    const parts = [];
+    if (ov && ov.in_progress > 0) parts.push(ov.in_progress + ' running');
+    if (ov && ov.pending > 0) parts.push(ov.pending + ' pending');
+    const counts = parts.join(' \u00B7 ');
+
+    return '<div class="loc-item' + (i === selectedIdx ? ' active' : '') + '" data-idx="' + i + '" onclick="selectLocation(' + i + ')">'
+      + '<div class="loc-dot ' + (running ? 'running' : 'stopped') + '"></div>'
+      + '<div class="loc-name" title="' + esc(loc.path) + '">' + esc(loc.name) + '</div>'
+      + (counts ? '<div class="loc-counts">' + counts + '</div>' : '')
+      + '<button class="loc-remove" onclick="event.stopPropagation();removeLocation(' + i + ')" title="Remove">\u00D7</button>'
+      + '</div>';
+  }).join('');
+}
+
+// ── Character SVGs ─────────────────────────────────────────────────────────────
+
+function charTom() {
+  return '<svg viewBox="0 0 48 48">'
+    // body + tail
+    + '<ellipse cx="24" cy="42" rx="11" ry="6" fill="#8BAAC7"/>'
+    + '<path class="tom-tail" d="M35,40 Q43,34 40,24 Q38,18 42,14" fill="none" stroke="#8BAAC7" stroke-width="3.5" stroke-linecap="round"/>'
+    // head
+    + '<ellipse cx="24" cy="24" rx="14" ry="12" fill="#8BAAC7"/>'
+    // ears
+    + '<polygon points="11,17 7,3 19,13" fill="#8BAAC7"/><polygon points="12.5,15.5 9.5,6 17.5,13" fill="#F5A6B8"/>'
+    + '<polygon points="37,17 41,3 29,13" fill="#8BAAC7"/><polygon points="35.5,15.5 38.5,6 30.5,13" fill="#F5A6B8"/>'
+    // eyes open
+    + '<g class="eyes-open">'
+    + '<ellipse cx="17" cy="22" rx="4" ry="4.5" fill="white"/><ellipse cx="31" cy="22" rx="4" ry="4.5" fill="white"/>'
+    + '<g class="tom-pupils"><circle cx="18.2" cy="22.5" r="2.5" fill="#2B3A4E"/><circle cx="32.2" cy="22.5" r="2.5" fill="#2B3A4E"/>'
+    + '<circle cx="19" cy="21.5" r="0.9" fill="white"/><circle cx="33" cy="21.5" r="0.9" fill="white"/></g></g>'
+    // eyes closed
+    + '<g class="eyes-closed">'
+    + '<path d="M13,22 Q17,25 21,22" fill="none" stroke="#2B3A4E" stroke-width="2" stroke-linecap="round"/>'
+    + '<path d="M27,22 Q31,25 35,22" fill="none" stroke="#2B3A4E" stroke-width="2" stroke-linecap="round"/></g>'
+    // nose + mouth
+    + '<path d="M22.5,27 L24,29.5 L25.5,27 Z" fill="#F5A6B8"/>'
+    + '<path d="M21,30.5 Q24,33 27,30.5" fill="none" stroke="#5A7A9E" stroke-width=".9"/>'
+    // whiskers
+    + '<g class="tom-whiskers" opacity=".7">'
+    + '<line x1="3" y1="25" x2="14" y2="26" stroke="#6B8DA8" stroke-width=".8"/>'
+    + '<line x1="4" y1="28.5" x2="14" y2="28" stroke="#6B8DA8" stroke-width=".8"/>'
+    + '<line x1="34" y1="26" x2="45" y2="25" stroke="#6B8DA8" stroke-width=".8"/>'
+    + '<line x1="34" y1="28" x2="44" y2="28.5" stroke="#6B8DA8" stroke-width=".8"/></g>'
+    // zzz
+    + '<g class="zzz">'
+    + '<text class="zzz-1" x="36" y="10" font-size="10" font-family="sans-serif" font-weight="bold" fill="#58a6ff">z</text>'
+    + '<text class="zzz-2" x="41" y="4" font-size="7" font-family="sans-serif" font-weight="bold" fill="#58a6ff" opacity=".7">z</text></g>'
+    + '</svg>';
+}
+
+function charJerry() {
+  return '<svg viewBox="0 0 48 48">'
+    // big round ears
+    + '<g class="jerry-ears">'
+    + '<circle cx="11" cy="14" r="10" fill="#C49A6C"/><circle cx="11" cy="14" r="7" fill="#F5C7A8"/>'
+    + '<circle cx="37" cy="14" r="10" fill="#C49A6C"/><circle cx="37" cy="14" r="7" fill="#F5C7A8"/></g>'
+    // head
+    + '<ellipse cx="24" cy="27" rx="12" ry="11" fill="#C49A6C"/>'
+    // lighter muzzle
+    + '<ellipse cx="24" cy="31" rx="7" ry="6" fill="#DEBA8A"/>'
+    // eyes
+    + '<g class="eyes-open">'
+    + '<circle cx="18" cy="25" r="3.5" fill="white"/><circle cx="30" cy="25" r="3.5" fill="white"/>'
+    + '<circle cx="19" cy="25.5" r="2" fill="#3D2B1F"/><circle cx="31" cy="25.5" r="2" fill="#3D2B1F"/>'
+    + '<circle cx="19.5" cy="24.5" r=".7" fill="white"/><circle cx="31.5" cy="24.5" r=".7" fill="white"/></g>'
+    // nose
+    + '<circle cx="24" cy="29" r="2.2" fill="#F5A6B8"/>'
+    // whiskers
+    + '<line x1="7" y1="30" x2="17" y2="30" stroke="#A07850" stroke-width=".5"/>'
+    + '<line x1="7" y1="32.5" x2="17" y2="32" stroke="#A07850" stroke-width=".5"/>'
+    + '<line x1="31" y1="30" x2="41" y2="30" stroke="#A07850" stroke-width=".5"/>'
+    + '<line x1="31" y1="32" x2="41" y2="32.5" stroke="#A07850" stroke-width=".5"/>'
+    // teeth
+    + '<rect x="21.5" y="33" width="5" height="3.5" rx="1.2" fill="white"/>'
+    + '<line x1="24" y1="33" x2="24" y2="36.5" stroke="#DEBA8A" stroke-width=".5"/>'
+    // tail
+    + '<path d="M36,36 Q44,38 42,44 Q40,47 36,46" fill="none" stroke="#C49A6C" stroke-width="2" stroke-linecap="round"/>'
+    + '</svg>';
+}
+
+function charMamma() {
+  return '<svg viewBox="0 0 48 48">'
+    // headwrap
+    + '<path d="M10,24 Q8,8 24,5 Q40,8 38,24" fill="#E8443A"/>'
+    + '<path d="M13,21 Q12,11 24,8 Q36,11 35,21" fill="#D13A32"/>'
+    // knot
+    + '<ellipse cx="24" cy="5.5" rx="4.5" ry="3.5" fill="#E8443A"/>'
+    + '<ellipse cx="21" cy="4" rx="2.5" ry="2" fill="#F25050" transform="rotate(-20,21,4)"/>'
+    + '<ellipse cx="27" cy="4" rx="2.5" ry="2" fill="#F25050" transform="rotate(20,27,4)"/>'
+    // face
+    + '<ellipse cx="24" cy="30" rx="14" ry="13" fill="#8B6242"/>'
+    // eyes
+    + '<g class="eyes-open">'
+    + '<ellipse cx="18" cy="28" rx="3" ry="3.5" fill="white"/><ellipse cx="30" cy="28" rx="3" ry="3.5" fill="white"/>'
+    + '<circle cx="18.5" cy="28.5" r="2" fill="#2B1810"/><circle cx="30.5" cy="28.5" r="2" fill="#2B1810"/>'
+    + '<circle cx="19" cy="27.5" r=".7" fill="white"/><circle cx="31" cy="27.5" r=".7" fill="white"/>'
+    // eyebrows (stern)
+    + '<path d="M14,24 L21,25.5" fill="none" stroke="#2B1810" stroke-width="1.8" stroke-linecap="round"/>'
+    + '<path d="M34,24 L27,25.5" fill="none" stroke="#2B1810" stroke-width="1.8" stroke-linecap="round"/></g>'
+    // nose
+    + '<ellipse cx="24" cy="32" rx="2.2" ry="1.7" fill="#7A5638"/>'
+    // mouth (slight smirk)
+    + '<path d="M19,36 Q24,39 29,36" fill="none" stroke="#5A3D28" stroke-width="1.3" stroke-linecap="round"/>'
+    // earrings
+    + '<circle cx="9" cy="32" r="2.2" fill="#F5D76E"/><circle cx="9" cy="32" r="1" fill="#E8C03A"/>'
+    + '<circle cx="39" cy="32" r="2.2" fill="#F5D76E"/><circle cx="39" cy="32" r="1" fill="#E8C03A"/>'
+    // foot (for tapping animation)
+    + '<ellipse class="mamma-foot" cx="24" cy="46" rx="6" ry="2" fill="#8B6242" opacity=".5"/>'
+    + '</svg>';
+}
+
+function charSpike() {
+  return '<svg viewBox="0 0 48 48">'
+    // head (wide, bulldog)
+    + '<rect x="7" y="8" width="34" height="30" rx="14" fill="#C9A96E"/>'
+    // ears (floppy)
+    + '<ellipse cx="7" cy="16" rx="5" ry="7" fill="#A08050"/>'
+    + '<ellipse cx="41" cy="16" rx="5" ry="7" fill="#A08050"/>'
+    // lighter muzzle
+    + '<ellipse cx="24" cy="32" rx="11" ry="8" fill="#DFC088"/>'
+    // eyes
+    + '<g class="eyes-open">'
+    + '<circle cx="16" cy="22" r="4" fill="white"/><circle cx="32" cy="22" r="4" fill="white"/>'
+    + '<circle cx="16.8" cy="22.5" r="2.3" fill="#2B1810"/><circle cx="32.8" cy="22.5" r="2.3" fill="#2B1810"/>'
+    + '<circle cx="17.5" cy="21.5" r=".8" fill="white"/><circle cx="33.5" cy="21.5" r=".8" fill="white"/>'
+    // heavy brows
+    + '<g class="spike-brows">'
+    + '<path d="M11,17 L21,18" fill="none" stroke="#5A4020" stroke-width="3" stroke-linecap="round"/>'
+    + '<path d="M27,18 L37,17" fill="none" stroke="#5A4020" stroke-width="3" stroke-linecap="round"/></g></g>'
+    // nose
+    + '<ellipse class="spike-nose" cx="24" cy="28" rx="4.5" ry="3.5" fill="#3D2B1F"/>'
+    + '<circle cx="21.5" cy="27.5" r="1" fill="#5A4530"/><circle cx="26.5" cy="27.5" r="1" fill="#5A4530"/>'
+    // mouth + underbite
+    + '<path d="M17,34 Q24,37 31,34" fill="none" stroke="#5A4020" stroke-width="1.2"/>'
+    + '<rect x="18" y="34" width="3.5" height="3" rx="1" fill="white"/>'
+    + '<rect x="26.5" y="34" width="3.5" height="3" rx="1" fill="white"/>'
+    // tongue (hidden by default)
+    + '<ellipse class="tongue-out" cx="24" cy="38" rx="3" ry="2.5" fill="#E86060"/>'
+    // collar
+    + '<rect x="9" y="38" width="30" height="5.5" rx="2.5" fill="#D43D3D"/>'
+    + '<circle cx="17" cy="41" r="2.2" fill="#F5D76E"/>'
+    + '<circle cx="24" cy="41" r="2.2" fill="#F5D76E"/>'
+    + '<circle cx="31" cy="41" r="2.2" fill="#F5D76E"/>'
+    // tail (small, for wagging)
+    + '<path class="spike-tail" d="M41,30 Q46,26 44,20" fill="none" stroke="#C9A96E" stroke-width="3" stroke-linecap="round"/>'
+    + '</svg>';
+}
+
+function getCharacter(agentId, state) {
+  // Map agent state to CSS class
+  const st = 'st-' + state;
+  let charClass, svg;
+
+  if (agentId === 'big_mamma') {
+    charClass = 'char char-mamma';
+    svg = charMamma();
+  } else if (agentId === 'tom') {
+    charClass = 'char char-tom';
+    svg = charTom();
+  } else if (agentId.startsWith('jerry')) {
+    charClass = 'char char-jerry';
+    svg = charJerry();
+  } else if (agentId === 'spike') {
+    charClass = 'char char-spike';
+    svg = charSpike();
+  } else {
+    return '<div class="agent-char">' + agentId + '</div>';
+  }
+
+  return '<div class="agent-char ' + charClass + ' ' + st + '">' + svg + '</div>';
+}
+
+// ── Render: Agents ─────────────────────────────────────────────────────────────
+
+const AGENT_FILLERS = {
+  tom: [
+    'Passing the ball', 'Catching lasers', 'Plotting mischief',
+    'Sharpening claws', 'Chasing shadows', 'Setting traps',
+    'Tiptoeing around', 'Hatching a plan', 'Sneaking up',
+    'Polishing the frying pan', 'Reading the blueprint',
+    'Loading the catapult', 'Stretching whiskers',
+  ],
+  jerry: [
+    "Workin' for that cheese", 'Making a hole', 'Nibbling away',
+    'Dodging mousetraps', 'Stealing crumbs', 'Running circuits',
+    'Outsmarting the cat', 'Squeezing through walls',
+    'Cheese heist in progress', 'Scurrying with purpose',
+    'Tunneling to freedom', 'Tiny paws, big results',
+    'Carrying twice his weight',
+  ],
+  big_mamma: [
+    'Keeping the house in order', 'Waving the rolling pin',
+    'Supervising from the kitchen', 'Side-eyeing everyone',
+    'Counting heads', 'One more warning...', "Don't make me come over there",
+    'Assigning chores', 'Tapping her foot', 'Shaking her head',
+    'Watching like a hawk', 'Running a tight ship',
+  ],
+  spike: [
+    'Sniffing for trouble', 'Guarding the yard', 'Growling softly',
+    'Burying a bone', 'Patrolling the perimeter', 'Flexing',
+    'Barking at nothing', 'Napping with one eye open',
+    'Chewing the evidence', 'Scratching behind his ear',
+  ],
+};
+
+function agentFiller(agentId) {
+  let key = agentId;
+  if (agentId.startsWith('jerry')) key = 'jerry';
+  const list = AGENT_FILLERS[key] || AGENT_FILLERS.jerry;
+  const idx = Math.floor(Date.now() / 6000) % list.length;
+  const offset = agentId.split('').reduce((s, c) => s + c.charCodeAt(0), 0);
+  return list[(idx + offset) % list.length];
+}
+
+function renderAgents(agents) {
+  if (!agents) return;
+  // Sort: Big Mamma first, then Tom, then Spike, then Jerrys
+  const order = { big_mamma: 0, tom: 1, spike: 2 };
+  const sorted = [...agents].sort((a, b) => {
+    const oa = order[a.id] !== undefined ? order[a.id] : 3;
+    const ob = order[b.id] !== undefined ? order[b.id] : 3;
+    return oa - ob;
+  });
+  $('agents-list').innerHTML = sorted.map(a => {
+    let detail;
+    if (a.task) {
+      detail = '<div class="agent-detail">' + esc(agentFiller(a.id)) + '</div>';
+    } else {
+      detail = '<div class="agent-detail" style="color:var(--text-3)">' + esc(a.role) + '</div>';
+    }
+    return '<div class="agent-item">'
+      + getCharacter(a.id, a.state)
+      + '<div class="agent-info"><div class="agent-name">' + esc(a.name) + '</div>' + detail + '</div>'
+      + '<div class="agent-status status-' + a.state + '" title="' + a.state + '"></div>'
+      + '</div>';
+  }).join('');
+}
+
+// ── Render: Tasks ──────────────────────────────────────────────────────────────
+
+function renderTasks(tasks) {
+  const el = $('tasks-list');
+  if (!tasks || tasks.length === 0) {
+    el.innerHTML = '';
+    $('task-counts').textContent = '';
+    return;
+  }
+
+  // Counts
+  const c = { pending: 0, in_progress: 0, done: 0, failed: 0 };
+  tasks.forEach(t => c[t.status]++);
+  const parts = [];
+  if (c.in_progress) parts.push(c.in_progress + ' running');
+  if (c.pending) parts.push(c.pending + ' pending');
+  if (c.done) parts.push(c.done + ' done');
+  if (c.failed) parts.push(c.failed + ' failed');
+  $('task-counts').textContent = parts.join(' \u00B7 ');
+
+  // Only show WIP task line numbers
+  const wip = tasks.filter(t => t.status === 'in_progress');
+  if (wip.length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+
+  el.innerHTML = '<div class="wip-tags">'
+    + wip.map(t => '<span class="wip-tag" title="' + esc(t.desc) + '">#' + t.line + '</span>').join('')
+    + '</div>';
+}
+
+// ── Render: Log filters ────────────────────────────────────────────────────────
+
+function renderFilters() {
+  $('log-filters').innerHTML = FILTERS.map(f =>
+    '<button class="filter-btn' + (logFilter === f.id ? ' active' : '') + '" onclick="setFilter(\'' + f.id + '\')">' + f.label + '</button>'
+  ).join('');
+}
+
+// ── Render: Logs ───────────────────────────────────────────────────────────────
+
+// Strip ANSI escape codes from log text
+function stripAnsi(s) {
+  return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// ── Task color palette (15 visually distinct colors on dark bg) ───────────────
+const TASK_PALETTE = [
+  '#58a6ff','#3fb950','#d29922','#bc8cff','#f778ba',
+  '#d18616','#79c0ff','#56d364','#e3b341','#ff7b72',
+  '#d2a8ff','#7ee787','#ffa657','#a5d6ff','#f47067',
+];
+
+function renderLogs(entries) {
+  const el = $('log-content');
+  const legendEl = $('task-legend');
+  const wasAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+
+  if (!entries || entries.length === 0) {
+    el.innerHTML = '<div class="log-empty">No log entries yet. Start the system to see activity.</div>';
+    legendEl.innerHTML = '';
+    return;
+  }
+
+  const re = /^\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\] \[([^\]]+)\] (.*)$/;
+  const taskEvtRe = /([\u25B6\u2713\u2717]) TASK (STARTED|DONE|FAILED) \u2500{3} \[([^\]]+)\] #(\d+)(?:[^:]*): (.*)/;
+
+  // ── First pass: collect unique tasks, assign colors ──────────────────────
+  const taskInfo = {}; // taskNum → { color, desc, lastStatus }
+  let colorIdx = 0;
+  for (const rawLine of entries) {
+    const line = stripAnsi(rawLine);
+    const tm = line.match(taskEvtRe);
+    if (tm) {
+      const num = tm[4];
+      if (!taskInfo[num]) {
+        taskInfo[num] = {
+          color: TASK_PALETTE[colorIdx % TASK_PALETTE.length],
+          desc: tm[5],
+          lastStatus: tm[2],
+        };
+        colorIdx++;
+      } else {
+        taskInfo[num].lastStatus = tm[2];
+      }
+    }
+  }
+
+  // ── Render task legend ──────────────────────────────────────────────────
+  const nums = Object.keys(taskInfo);
+  if (nums.length > 0) {
+    legendEl.innerHTML = nums.map(n => {
+      const t = taskInfo[n];
+      const icon = t.lastStatus === 'DONE' ? '\u2713' : t.lastStatus === 'FAILED' ? '\u2717' : '\u25B8';
+      const shortDesc = t.desc.length > 38 ? t.desc.slice(0, 38) + '\u2026' : t.desc;
+      return '<span class="task-legend-item" title="#' + n + ': ' + esc(t.desc) + '">'
+        + '<span class="task-legend-dot" style="background:' + t.color + '"></span>'
+        + '<span class="task-legend-num" style="color:' + t.color + '">' + icon + ' #' + n + '</span>'
+        + '<span class="task-legend-desc">' + esc(shortDesc) + '</span>'
+        + '</span>';
+    }).join('');
+  } else {
+    legendEl.innerHTML = '';
+  }
+
+  // ── Second pass: render log lines with task tracking ────────────────────
+  const agentTask = {}; // agent key → task number (tracks active task per worker)
+  let html = '';
+
+  for (const rawLine of entries) {
+    const line = stripAnsi(rawLine);
+    const m = line.match(re);
+
+    if (!m) {
+      html += '<div class="log-line log-continuation"><span class="log-msg">' + esc(line) + '</span></div>';
+      continue;
+    }
+
+    const time = m[2];
+    const agent = m[3];
+    const msg = m[4];
+
+    // Check for task event
+    const evt = msg.match(taskEvtRe);
+    let taskNum = null;
+    let evtType = '';
+
+    if (evt) {
+      evtType = evt[2];           // STARTED / DONE / FAILED
+      const taskAgent = evt[3];   // "Tom" or "Jerry #0"
+      taskNum = evt[4];
+
+      if (evtType === 'STARTED') {
+        agentTask[taskAgent] = taskNum;
+        if (taskAgent === 'Tom') agentTask['TOM'] = taskNum;
+      } else {
+        // DONE or FAILED — this line still gets the color, then clear
+        if (taskAgent === 'Tom') delete agentTask['TOM'];
+        // defer delete of taskAgent until after we render this line
+      }
+    }
+
+    // Determine task color for this line
+    let color = null;
+    if (taskNum && taskInfo[taskNum]) {
+      color = taskInfo[taskNum].color;
+    } else if (agentTask[agent]) {
+      color = taskInfo[agentTask[agent]]?.color;
+    } else {
+      // Check if BIG MAMMA line mentions a Jerry slot
+      const jm = msg.match(/Jerry #(\d+)/);
+      if (jm) {
+        const jkey = 'Jerry #' + jm[1];
+        if (agentTask[jkey]) color = taskInfo[agentTask[jkey]]?.color;
+      }
+    }
+
+    // Clear agent task AFTER coloring the DONE/FAILED line
+    if (evt && evtType !== 'STARTED') {
+      const taskAgent = evt[3];
+      delete agentTask[taskAgent];
+    }
+
+    // Build HTML
+    const agentClass = agent.toLowerCase().replace(/\s+/g, '-');
+    let lineStyle = '';
+    if (color) {
+      const bgOpacity = evtType ? '1a' : '0a';
+      lineStyle = ' style="border-left:3px solid ' + color + ';padding-left:21px;background:' + color + bgOpacity + '"';
+    }
+
+    // Truncate task description in event lines if > 30 chars
+    let displayMsg = msg;
+    if (evt) {
+      const desc = evt[5];
+      if (desc.length > 30) {
+        displayMsg = msg.replace(desc, desc.slice(0, 30) + '(...)');
+      }
+    }
+
+    let msgHtml;
+    if (evtType && color) {
+      msgHtml = '<span class="log-msg" style="color:' + color + ';font-weight:600">' + esc(displayMsg) + '</span>';
+    } else {
+      msgHtml = '<span class="log-msg">' + esc(displayMsg) + '</span>';
+    }
+
+    html += '<div class="log-line"' + lineStyle + '>'
+      + '<span class="log-time">' + time + '</span>'
+      + '<span class="log-agent ' + agentClass + '">' + agent + '</span>'
+      + msgHtml
+      + '</div>';
+  }
+
+  el.innerHTML = html;
+  if (wasAtBottom) el.scrollTop = el.scrollHeight;
+}
+
+// ── Render: Controls ───────────────────────────────────────────────────────────
+
+function updateControls(running) {
+  $('btn-start').disabled = running;
+  $('btn-stop').disabled = !running;
+  $('btn-start').style.opacity = running ? '0.35' : '1';
+  $('btn-stop').style.opacity = running ? '1' : '0.35';
+}
+
+// ── Render: Connection ─────────────────────────────────────────────────────────
+
+function renderConn() {
+  $('conn-dot').className = 'conn-dot ' + (connected ? 'ok' : 'err');
+  $('conn-label').textContent = connected ? 'Connected' : 'Disconnected';
+}
+
+// ── Update page title ──────────────────────────────────────────────────────────
+
+function updateTitle() {
+  if (!currentState || !currentState.tasks) {
+    document.title = 'The House';
+    return;
+  }
+  const r = currentState.tasks.filter(t => t.status === 'in_progress').length;
+  const p = currentState.tasks.filter(t => t.status === 'pending').length;
+  if (r > 0) document.title = '(' + r + ' running) The House';
+  else if (p > 0) document.title = '(' + p + ' pending) The House';
+  else document.title = 'The House';
+}
+
+// ── Polling ────────────────────────────────────────────────────────────────────
+
+async function poll() {
+  try {
+    // Overview for location list
+    const overview = await api('GET', '/api/overview');
+    renderLocations(overview);
+
+    // State + logs for selected location
+    if (selectedIdx >= 0 && selectedIdx < locations.length) {
+      const loc = locations[selectedIdx];
+      const path = encodeURIComponent(loc.path);
+
+      currentState = await api('GET', '/api/state?path=' + path);
+      renderAgents(currentState.agents);
+      renderTasks(currentState.tasks);
+      updateControls(currentState.running);
+      updateTitle();
+
+      const logsData = await api('GET', '/api/logs?path=' + path + '&filter=' + logFilter + '&etag=' + logEtag);
+      if (logsData.changed) {
+        logEtag = logsData.etag;
+        renderLogs(logsData.entries);
+      }
+    }
+
+    if (!connected) { connected = true; renderConn(); }
+  } catch (e) {
+    if (connected) { connected = false; renderConn(); }
+  }
+}
+
+// ── Actions ────────────────────────────────────────────────────────────────────
+
+function selectLocation(idx) {
+  if (idx === selectedIdx) return;
+  selectedIdx = idx;
+  logEtag = '';
+  logFilter = 'all';
+  currentState = null;
+
+  // Close editor panel on location switch
+  $('tasks-editor').classList.remove('open');
+  editorDirty = false;
+
+  // Show detail sections
+  $('agents-section').style.display = '';
+  $('tasks-section').style.display = '';
+  $('controls-section').style.display = '';
+  $('empty-state').style.display = 'none';
+  $('log-view').style.display = 'flex';
+
+  $('log-title').textContent = locations[idx].name + ' \u2014 Logs';
+  $('log-content').innerHTML = '<div class="log-empty">Loading...</div>';
+
+  renderLocations();
+  renderFilters();
+  poll();
+}
+
+function setFilter(f) {
+  if (f === logFilter) return;
+  logFilter = f;
+  logEtag = '';
+  renderFilters();
+  $('log-content').innerHTML = '<div class="log-empty">Loading...</div>';
+  poll();
+}
+
+// ── Modal ──────────────────────────────────────────────────────────────────────
+
+function showAddLocation() {
+  $('modal-overlay').style.display = 'flex';
+  $('loc-path').value = '';
+  $('loc-name').value = '';
+  $('modal-error').style.display = 'none';
+  setTimeout(() => $('loc-path').focus(), 100);
+}
+
+function closeModal() {
+  $('modal-overlay').style.display = 'none';
+}
+
+async function addLocation() {
+  const path = $('loc-path').value.trim();
+  const name = $('loc-name').value.trim();
+  if (!path) {
+    $('modal-error').textContent = 'Enter a project path';
+    $('modal-error').style.display = 'block';
+    return;
+  }
+
+  const res = await api('POST', '/api/locations', { path, name });
+  if (res.error) {
+    $('modal-error').textContent = res.error;
+    $('modal-error').style.display = 'block';
+    return;
+  }
+
+  closeModal();
+  locations = await api('GET', '/api/locations');
+  selectLocation(locations.length - 1);
+  toast('Location added', 'success');
+}
+
+async function removeLocation(idx) {
+  if (!confirm('Remove "' + locations[idx].name + '" from the dashboard?')) return;
+  await api('DELETE', '/api/locations/' + idx);
+  locations = await api('GET', '/api/locations');
+
+  if (selectedIdx === idx) {
+    selectedIdx = -1;
+    currentState = null;
+    $('agents-section').style.display = 'none';
+    $('tasks-section').style.display = 'none';
+    $('controls-section').style.display = 'none';
+    $('empty-state').style.display = '';
+    $('log-view').style.display = 'none';
+    updateTitle();
+  } else if (selectedIdx > idx) {
+    selectedIdx--;
+  }
+  renderLocations();
+}
+
+// ── Tasks ──────────────────────────────────────────────────────────────────────
+
+async function addTask() {
+  const input = $('new-task');
+  const task = input.value.trim();
+  if (!task || selectedIdx < 0) return;
+
+  const res = await api('POST', '/api/task', { path: locations[selectedIdx].path, task });
+  if (res.error) { toast(res.error, 'error'); return; }
+
+  input.value = '';
+  toast('Task added', 'success');
+  poll();
+}
+
+async function retryTask(line) {
+  if (selectedIdx < 0) return;
+  await api('POST', '/api/task/retry', { path: locations[selectedIdx].path, line });
+  toast('Task queued for retry', 'info');
+  poll();
+}
+
+// ── Start / Stop ───────────────────────────────────────────────────────────────
+
+async function startHouse() {
+  if (selectedIdx < 0) return;
+  const loc = locations[selectedIdx];
+
+  try {
+    const branchInfo = await api('GET', '/api/branch?path=' + encodeURIComponent(loc.path));
+    if (branchInfo.error) {
+      toast(branchInfo.error, 'error');
+      return;
+    }
+    if (branchInfo.protected) {
+      toast('Cannot start on ' + branchInfo.branch + '. Use a dev branch.', 'error');
+      return;
+    }
+
+    // Populate and show the start modal
+    $('start-branch').value = branchInfo.branch || '';
+    $('start-jerries').value = '2';
+    $('start-modal-error').style.display = 'none';
+    $('start-modal-title').textContent = 'Start The House \u2014 ' + loc.name;
+    $('start-modal-overlay').style.display = 'flex';
+    setTimeout(() => $('start-branch').focus(), 100);
+  } catch (e) {
+    toast('Failed to check branch: ' + e.message, 'error');
+  }
+}
+
+async function confirmStartHouse() {
+  if (selectedIdx < 0) return;
+  const loc = locations[selectedIdx];
+  const branch = $('start-branch').value.trim();
+  const jerries = parseInt($('start-jerries').value, 10);
+
+  if (!branch) {
+    $('start-modal-error').textContent = 'Branch is required';
+    $('start-modal-error').style.display = 'block';
+    return;
+  }
+  if (branch === 'main' || branch === 'master') {
+    $('start-modal-error').textContent = 'Cannot start on ' + branch + '. Use a dev branch.';
+    $('start-modal-error').style.display = 'block';
+    return;
+  }
+  if (isNaN(jerries) || jerries < 0) {
+    $('start-modal-error').textContent = 'Jerries must be a non-negative number';
+    $('start-modal-error').style.display = 'block';
+    return;
+  }
+
+  $('start-modal-overlay').style.display = 'none';
+
+  try {
+    const res = await api('POST', '/api/start', { path: loc.path, branch, jerries });
+    if (res.error) { toast(res.error, 'error'); return; }
+    toast('Starting The House with ' + jerries + ' Jerry worker' + (jerries !== 1 ? 's' : '') + '...', 'success');
+    setTimeout(poll, 3000);
+  } catch (e) {
+    toast('Failed to start: ' + e.message, 'error');
+  }
+}
+
+function closeStartModal() {
+  $('start-modal-overlay').style.display = 'none';
+}
+
+async function stopHouse() {
+  if (selectedIdx < 0) return;
+  const loc = locations[selectedIdx];
+  if (!confirm('Stop The House at "' + loc.name + '"?')) return;
+
+  try {
+    const res = await api('POST', '/api/stop', { path: loc.path });
+    if (res.error) { toast(res.error, 'error'); return; }
+    toast('Stopping The House...', 'info');
+    setTimeout(poll, 2000);
+  } catch (e) {
+    toast('Failed to stop: ' + e.message, 'error');
+  }
+}
+
+async function clearLogs() {
+  if (selectedIdx < 0) return;
+  const loc = locations[selectedIdx];
+  if (!confirm('Clear all log files for "' + loc.name + '"?')) return;
+
+  const res = await api('POST', '/api/logs/clear', { path: loc.path, filter: logFilter });
+  if (res.error) { toast(res.error, 'error'); return; }
+  logEtag = '';
+  $('log-content').innerHTML = '<div class="log-empty">Logs cleared.</div>';
+  $('task-legend').innerHTML = '';
+  toast('Logs cleared', 'success');
+  setTimeout(poll, 1000);
+}
+
+async function killHouse() {
+  if (selectedIdx < 0) return;
+  const loc = locations[selectedIdx];
+  if (!confirm('KILL SWITCH: Force-stop ALL agents at "' + loc.name + '"?\n\nThis kills all process trees, sweeps for orphans,\nand resets stuck tasks. Nuclear option.')) return;
+
+  try {
+    const res = await api('POST', '/api/kill-switch', { path: loc.path });
+    if (res.error) { toast(res.error, 'error'); return; }
+    const parts = [];
+    if (res.killed) parts.push(res.killed + ' process(es) killed');
+    if (res.orphans) parts.push(res.orphans + ' orphan(s) found');
+    if (res.tasks_reset) parts.push(res.tasks_reset + ' task(s) reset');
+    toast('Kill switch: ' + (parts.join(', ') || 'done'), 'error');
+    setTimeout(poll, 2000);
+  } catch (e) {
+    toast('Failed: ' + e.message, 'error');
+  }
+}
+
+// ── Tasks Editor ──────────────────────────────────────────────────────────
+
+let editorDirty = false;
+let editorOriginal = '';
+
+async function openTasksEditor() {
+  if (selectedIdx < 0) return;
+  const loc = locations[selectedIdx];
+  const panel = $('tasks-editor');
+
+  $('editor-title').textContent = loc.name + ' \u2014 TASKS.md';
+  $('editor-status').textContent = 'Loading...';
+  $('editor-status').className = 'editor-status';
+  $('tasks-textarea').value = '';
+
+  panel.classList.add('open');
+
+  try {
+    const resp = await fetch('/api/tasks/raw?path=' + encodeURIComponent(loc.path));
+    const res = await resp.json();
+    if (res.error) {
+      toast(res.error, 'error');
+      $('editor-status').textContent = 'Error loading';
+      $('editor-status').className = 'editor-status unsaved';
+      return;
+    }
+
+    editorOriginal = res.content || '';
+    $('tasks-textarea').value = editorOriginal;
+    editorDirty = false;
+    $('editor-status').textContent = '';
+  } catch (e) {
+    toast('Failed to load tasks: ' + e.message, 'error');
+    $('editor-status').textContent = 'Error loading';
+    $('editor-status').className = 'editor-status unsaved';
+  }
+}
+
+function closeTasksEditor() {
+  if (editorDirty) {
+    if (!confirm('You have unsaved changes. Discard?')) return;
+  }
+  $('tasks-editor').classList.remove('open');
+  editorDirty = false;
+}
+
+async function saveTasksEditor() {
+  if (selectedIdx < 0) return;
+  const loc = locations[selectedIdx];
+  const content = $('tasks-textarea').value;
+
+  $('editor-status').textContent = 'Saving...';
+  $('editor-status').className = 'editor-status';
+
+  const res = await api('PUT', '/api/tasks/raw', { path: loc.path, content });
+  if (res.error) {
+    toast(res.error, 'error');
+    $('editor-status').textContent = 'Error saving';
+    $('editor-status').className = 'editor-status unsaved';
+    return;
+  }
+
+  editorOriginal = content;
+  editorDirty = false;
+  $('editor-status').textContent = 'Saved';
+  $('editor-status').className = 'editor-status';
+  setTimeout(() => {
+    if ($('editor-status').textContent === 'Saved') $('editor-status').textContent = '';
+  }, 2000);
+
+  toast('Tasks saved', 'success');
+  poll();
+}
+
+// Track dirty state
+$('tasks-textarea').addEventListener('input', () => {
+  const changed = $('tasks-textarea').value !== editorOriginal;
+  editorDirty = changed;
+  $('editor-status').textContent = changed ? 'Unsaved changes' : '';
+  $('editor-status').className = 'editor-status' + (changed ? ' unsaved' : '');
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if ($('tasks-editor').classList.contains('open')) { closeTasksEditor(); return; }
+    closeStartModal();
+    closeModal();
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === 's' && $('tasks-editor').classList.contains('open')) {
+    e.preventDefault();
+    saveTasksEditor();
+  }
+});
+
+// ── Shutdown on browser close ──────────────────────────────────────────────────
+
+window.addEventListener('beforeunload', () => {
+  navigator.sendBeacon('/api/stop-all');
+});
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+
+async function init() {
+  // Cancel any pending shutdown (handles page refresh — page reloaded before 5s timer fires)
+  try { await api('POST', '/api/cancel-stop-all'); } catch (e) {}
+
+  // Auto-discover running instances before loading locations
+  try {
+    const disc = await api('GET', '/api/discover');
+    if (disc.discovered && disc.discovered.length > 0) {
+      toast(disc.discovered.length + ' running instance' + (disc.discovered.length > 1 ? 's' : '') + ' discovered', 'success');
+    }
+  } catch (e) {}
+
+  locations = await api('GET', '/api/locations');
+  renderLocations();
+  renderConn();
+
+  if (locations.length > 0) {
+    // Prefer auto-selecting a running location
+    const overview = await api('GET', '/api/overview');
+    let pick = 0;
+    if (overview && overview.length) {
+      const runIdx = locations.findIndex(loc => {
+        const ov = overview.find(o => o.path === loc.path);
+        return ov && ov.running;
+      });
+      if (runIdx >= 0) pick = runIdx;
+    }
+    selectLocation(pick);
+  }
+
+  setInterval(poll, 2000);
+}
+
+init();
+</script>
+</body>
+</html>
