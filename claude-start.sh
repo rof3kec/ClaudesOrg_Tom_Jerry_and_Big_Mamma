@@ -19,6 +19,16 @@
 
 set -u
 
+# ─── Resolve script directory (where this script and siblings live) ──────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ─── Source shared library ───────────────────────────────────────────────────
+
+LOG_FILE="/dev/null"
+LOG_PREFIX="[START]"
+source "$SCRIPT_DIR/lib/house-common.sh"
+
 # ─── Error helper (shows message + pauses so Windows terminals don't vanish) ─
 
 fail() {
@@ -30,10 +40,6 @@ fail() {
   fi
   exit 1
 }
-
-# ─── Resolve script directory (where this script and siblings live) ──────────
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 
@@ -112,6 +118,7 @@ if [ ! -f "$TASK_FILE" ]; then
 Tasks are processed top-to-bottom.
 - `[ ]` = pending
 - `[!]` = in progress (do not edit)
+- `[q]` = ready for QA (do not edit)
 - `[x]` = done
 - `[-]` = failed
 
@@ -154,6 +161,7 @@ or update TASKS.md, follow these rules precisely.
 Tasks are processed top-to-bottom.
 - `[ ]` = pending
 - `[!]` = in progress (do not edit)
+- `[q]` = ready for QA (do not edit)
 - `[x]` = done
 - `[-]` = failed
 
@@ -213,6 +221,25 @@ CLAUDEEOF
   echo "[claude-start] ✓ CLAUDE.md now has task-writing instructions."
 else
   echo "[claude-start] CLAUDE.md already has Big Mamma's instructions. ✓"
+fi
+
+# ─── Ensure logs are gitignored ──────────────────────────────────────────────
+
+if [ -f ".gitignore" ]; then
+  LOGS_TO_IGNORE=(
+    "*.log"
+    "*.log.old"
+  )
+  ADDED_ANY=false
+  for pattern in "${LOGS_TO_IGNORE[@]}"; do
+    if ! grep -qxF "$pattern" .gitignore 2>/dev/null; then
+      echo "$pattern" >> .gitignore
+      ADDED_ANY=true
+    fi
+  done
+  if [ "$ADDED_ANY" = true ]; then
+    echo "[claude-start] Added log patterns to .gitignore"
+  fi
 fi
 
 # ─── Validate Jerry count ────────────────────────────────────────────────────
@@ -282,22 +309,6 @@ QA_PID=""
 TAIL_PID=""
 CLEANING_UP=false
 SPIKE_LAST_RESTART=0
-
-# Kill a process and all its children (tree kill on Windows).
-# On MSYS2, plain `kill` only terminates the bash wrapper — native
-# child processes (node.exe/claude) survive as orphans. taskkill /T
-# kills the entire tree.
-kill_tree() {
-  local pid="$1"
-  if [ -f "/proc/$pid/winpid" ]; then
-    local winpid
-    winpid=$(cat "/proc/$pid/winpid" 2>/dev/null || true)
-    if [ -n "$winpid" ]; then
-      taskkill //T //F //PID "$winpid" > /dev/null 2>&1 && return 0
-    fi
-  fi
-  kill "$pid" 2>/dev/null
-}
 
 cleanup() {
   # Prevent re-entrant cleanup (trap EXIT fires after trap INT/TERM)
