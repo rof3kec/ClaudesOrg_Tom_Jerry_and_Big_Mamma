@@ -9,6 +9,15 @@
 
 set -u
 
+# ─── Source shared library ───────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_FILE="/dev/null"
+LOG_PREFIX="[STOP]"
+source "$SCRIPT_DIR/lib/house-common.sh"
+
+# ─── Config ──────────────────────────────────────────────────────────────────
+
 SIGNAL="TERM"
 LOCATION=""
 
@@ -38,8 +47,6 @@ fi
 
 KILLED=0
 
-# Cross-platform kill: on Windows/MSYS, kill -9 often doesn't work.
-# Resolve the real Windows PID via /proc/<pid>/winpid and use taskkill.
 kill_pid() {
   local pid="$1"
   local label="$2"
@@ -49,10 +56,7 @@ kill_pid() {
     return
   fi
 
-  # On Windows/MSYS2: ALWAYS use taskkill /T /F for process tree kill.
-  # Plain `kill` only terminates the MSYS2 bash wrapper process;
-  # native child processes (node.exe running claude) survive as orphans.
-  # /T = kill entire process tree (children too), /F = force (required for console apps).
+  # On Windows/MSYS2: use taskkill /T /F for process tree kill
   if [ -f "/proc/$pid/winpid" ]; then
     local winpid
     winpid=$(cat "/proc/$pid/winpid" 2>/dev/null || true)
@@ -104,38 +108,23 @@ echo ""
 
 if [ -n "$LOCATION" ]; then
   # ── Location-scoped stop ────────────────────────────────────────────────
-  # Only kills processes belonging to THIS house instance, using PID files
-  # written to the project directory. Other locations are left alone.
-
   START_PID=""
   [ -f ".claude-start.lock" ] && START_PID=$(cat ".claude-start.lock" 2>/dev/null || true)
 
   if [ "$SIGNAL" = "TERM" ] && [ -n "$START_PID" ]; then
-    # Graceful stop: SIGTERM to the House Manager triggers its cleanup trap,
-    # which kills Tom, Big Mamma, Spike, tail, and removes PID files.
     kill_pid "$START_PID" "🏠 House Manager"
-    # Give the trap handler a moment to clean up children
     sleep 2
   else
-    # Force stop (SIGKILL) or no lock file — kill each process from PID files.
-    # SIGKILL doesn't trigger traps, so we must hunt down each process.
     [ -n "$START_PID" ] && kill_pid "$START_PID" "🏠 House Manager"
-
-    # Tom (primary worker)
     kill_from_status ".worker-status" "WORKER_PID" "🐱 Tom (worker)"
     kill_from_status ".worker-status" "CLAUDE_PID" "🐱 Tom (claude)"
     kill_from_file   ".claude-worker.pid"           "🐱 Tom (claude)"
-
-    # Big Mamma (supervisor)
     kill_from_file ".claude-supervisor.pid" "👩🏽 Big Mamma"
-
-    # Spike (QA)
     kill_from_file ".claude-qa.pid" "🐶 Spike"
   fi
 
 else
   # ── Global stop (no --location) — kill ALL matching processes ──────────
-  # Nuclear option: finds and kills every house process on the system.
   for pattern in "claude-worker.sh" "claude-supervisor.sh" "claude-qa.sh" "claude-start.sh"; do
     PIDS=$(ps -ef 2>/dev/null | grep "$pattern" | grep -v grep | awk '{print $2}' || true)
     if [ -n "$PIDS" ]; then
@@ -160,9 +149,6 @@ else
 fi
 
 # ─── Sweep for orphaned claude processes (Windows safety net) ──────────────
-# On Windows, even with tree kill, processes can escape if PID files are stale
-# or the House Manager died before it could track children.
-# For global stop or force mode: sweep for any surviving node.exe running claude.
 
 if [ -f "/proc/self/winpid" ] && { [ -z "$LOCATION" ] || [ "$SIGNAL" = "KILL" ]; }; then
   echo "[claude-stop] 🔍 Sweeping for orphaned claude processes..."
@@ -187,17 +173,12 @@ rm -f .worker-hibernate .claude-worker.pid .claude-supervisor.pid .claude-qa.pid
 rm -rf .tasks.lock
 
 # ─── Reset in-progress tasks back to pending ───────────────────────────────
-# Agents are dead — any [!] tasks were mid-flight and must return to [ ]
 
 TASK_FILE="TASKS.md"
 if [ -f "$TASK_FILE" ]; then
   STALE=$(grep -c '^\[!\] ' "$TASK_FILE" 2>/dev/null || true)
   if [ "${STALE:-0}" -gt 0 ]; then
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-      sed -i '' 's/^\[!\] /[ ] /' "$TASK_FILE"
-    else
-      sed -i 's/^\[!\] /[ ] /' "$TASK_FILE"
-    fi
+    sedi 's/^\[!\] /[ ] /' "$TASK_FILE"
     echo "[claude-stop] Reset $STALE in-progress task(s) back to pending in $TASK_FILE"
   fi
 fi

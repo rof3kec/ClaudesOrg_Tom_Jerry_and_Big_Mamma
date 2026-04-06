@@ -93,66 +93,36 @@ def _find_bash():
 BASH = _find_bash()
 
 
-# ── Process killing (Windows-aware) ──────────────────────────────────────────
+# ── Stop via claude-stop.sh (single source of truth for process management) ──
 
-def _msys_pid_to_winpid(msys_pid):
-    """Convert an MSYS2 bash PID to a native Windows PID.
+def _run_stop_script(path, force=False, timeout=15):
+    """Delegate all stop/cleanup to claude-stop.sh.
 
-    PID files (.claude-start.lock etc.) contain MSYS2 PIDs ($$), not Windows PIDs.
-    We need the Windows PID for taskkill /T (tree kill).
+    This is the canonical way to stop a house instance. The stop script handles:
+    - Process tree killing (Windows-aware taskkill /T /F)
+    - State/PID file cleanup
+    - Task reset ([!] -> [ ])
+    - Worktree cleanup
+    Returns True if the script ran successfully.
     """
     if not BASH:
-        return None
+        return False
+    cmd = [BASH, str(SCRIPT_DIR / "claude-stop.sh"), "--location", path]
+    if force:
+        cmd.insert(2, "--force")
     try:
-        r = subprocess.run(
-            [BASH, "-c", f"cat /proc/{msys_pid}/winpid 2>/dev/null"],
-            capture_output=True, text=True, timeout=5,
-        )
-        winpid = r.stdout.strip()
-        return int(winpid) if winpid.isdigit() else None
+        r = subprocess.run(cmd, cwd=str(SCRIPT_DIR),
+                           capture_output=True, text=True, timeout=timeout)
+        return r.returncode == 0
     except Exception:
-        return None
-
-
-def _kill_process_tree(pid, is_winpid=False):
-    """Kill a process and ALL its children.
-
-    On Windows: uses taskkill /T /F /PID (tree kill + force).
-    This is the ONLY reliable way to kill native child processes (node.exe/claude)
-    that were spawned by MSYS2 bash scripts.
-    """
-    if sys.platform == "win32":
-        target_pid = pid
-        if not is_winpid:
-            winpid = _msys_pid_to_winpid(pid)
-            if winpid:
-                target_pid = winpid
-        try:
-            r = subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(target_pid)],
-                capture_output=True, text=True, timeout=10,
-            )
-            return r.returncode == 0
-        except Exception:
-            return False
-    else:
-        import signal as _sig
-        try:
-            os.killpg(os.getpgid(pid), _sig.SIGTERM)
-            return True
-        except Exception:
-            try:
-                os.kill(pid, _sig.SIGTERM)
-                return True
-            except Exception:
-                return False
+        return False
 
 
 def _nuke_claude_processes():
-    """Nuclear option: find and kill ALL node.exe processes running claude.
+    """Nuclear fallback: find and kill ALL node.exe processes running claude.
 
     Uses wmic to query process command lines. This catches any orphaned
-    claude processes that survived PID-based cleanup.
+    claude processes that survived the stop script cleanup.
     Returns the number of processes killed.
     """
     if sys.platform != "win32":
@@ -167,7 +137,6 @@ def _nuke_claude_processes():
         )
         for line in r.stdout.splitlines():
             if "claude" in line.lower():
-                # CSV format: Node,CommandLine,ProcessId — PID is last field
                 parts = line.strip().rstrip(",").split(",")
                 pid_str = parts[-1].strip() if parts else ""
                 if pid_str.isdigit():
@@ -182,73 +151,6 @@ def _nuke_claude_processes():
     except Exception:
         pass
     return killed
-
-
-def _kill_all_known_pids(path):
-    """Kill all house processes for a location using PID files + status files.
-
-    Returns the number of kill attempts made.
-    """
-    killed = 0
-
-    # House Manager (claude-start.sh)
-    lock_file = os.path.join(path, ".claude-start.lock")
-    if os.path.exists(lock_file):
-        try:
-            msys_pid = int(Path(lock_file).read_text(encoding="utf-8").strip())
-            if _kill_process_tree(msys_pid):
-                killed += 1
-        except (ValueError, OSError):
-            pass
-
-    # Individual agents from PID files
-    for pidfile in (".claude-worker.pid", ".claude-supervisor.pid", ".claude-qa.pid"):
-        fpath = os.path.join(path, pidfile)
-        if os.path.exists(fpath):
-            try:
-                pid = int(Path(fpath).read_text(encoding="utf-8").strip())
-                if _kill_process_tree(pid):
-                    killed += 1
-            except (ValueError, OSError):
-                pass
-
-    # Tom's claude process from worker status
-    ws = read_kv(os.path.join(path, ".worker-status"))
-    for key in ("WORKER_PID", "CLAUDE_PID"):
-        pid_str = ws.get(key, "")
-        if pid_str.isdigit():
-            _kill_process_tree(int(pid_str))
-
-    # Jerry workers from parallel status files
-    for i in range(20):
-        ps = read_kv(os.path.join(path, f".parallel-status-{i}"))
-        pid_str = ps.get("PID", "")
-        if not pid_str:
-            # Jerry PIDs aren't in status files — they're tracked in-memory by supervisor.
-            # The tree kill of the supervisor should catch them.
-            pass
-
-    return killed
-
-
-def _cleanup_state_files(path):
-    """Remove all state/PID files for a location."""
-    for f in (".claude-start.lock", ".worker-status", ".qa-status",
-              ".claude-worker.pid", ".claude-supervisor.pid", ".claude-qa.pid",
-              ".worker-hibernate", ".house-jerries"):
-        try:
-            os.remove(os.path.join(path, f))
-        except OSError:
-            pass
-    for i in range(20):
-        try:
-            os.remove(os.path.join(path, f".parallel-status-{i}"))
-        except OSError:
-            pass
-    try:
-        shutil.rmtree(os.path.join(path, ".tasks.lock"), ignore_errors=True)
-    except Exception:
-        pass
 
 
 def _deregister_instance(path):
@@ -685,7 +587,7 @@ def api_start():
 
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
-    """Stop a location — kills process trees directly, then runs stop script for cleanup."""
+    """Stop a location — delegates to claude-stop.sh for all process/state cleanup."""
     data = request.json or {}
     path = data.get("path", "")
     force = data.get("force", False)
@@ -693,39 +595,16 @@ def api_stop():
     if not path or not os.path.isdir(path):
         return jsonify({"error": "Invalid path"}), 400
 
-    # Step 1: Kill all known process trees directly from Python.
-    # This is the reliable path — taskkill /T /F kills the entire tree
-    # including native Windows children that bash `kill` can't reach.
-    killed = _kill_all_known_pids(path)
-
-    # Step 2: Also run claude-stop.sh for task reset, worktree cleanup, etc.
-    # (processes are already dead, so the script just does cleanup)
-    if BASH:
-        cmd = [BASH, str(SCRIPT_DIR / "claude-stop.sh"), "--location", path]
-        if force:
-            cmd.insert(2, "--force")
-        try:
-            subprocess.Popen(cmd, cwd=str(SCRIPT_DIR),
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
-
-    # Step 3: Clean up state files (belt and suspenders — stop script also does this)
-    time.sleep(0.5)
-    _cleanup_state_files(path)
-
-    return jsonify({"ok": True, "killed": killed})
+    ok = _run_stop_script(path, force=force)
+    return jsonify({"ok": ok})
 
 
 @app.route("/api/kill-switch", methods=["POST"])
 def api_kill_switch():
-    """Nuclear option: kill ALL house processes, sweep for orphans, clean everything.
+    """Nuclear option: force-stop via script + sweep for orphaned processes.
 
-    This goes beyond /api/stop by:
-    1. Killing all known process trees
-    2. Sweeping for orphaned node.exe processes running claude
-    3. Cleaning up all state files
-    4. Resetting in-progress tasks back to pending
+    Goes beyond /api/stop by using --force and sweeping for orphans.
+    The stop script handles: process killing, state cleanup, task reset, worktree cleanup.
     """
     data = request.json or {}
     path = data.get("path", "")
@@ -733,54 +612,17 @@ def api_kill_switch():
     if not path or not os.path.isdir(path):
         return jsonify({"error": "Invalid path"}), 400
 
-    # Step 1: Kill all known process trees
-    killed = _kill_all_known_pids(path)
+    # Step 1: Force-stop via script (handles process trees, state, tasks, worktrees)
+    _run_stop_script(path, force=True)
 
-    # Step 2: Nuclear sweep — find ALL orphaned claude processes
+    # Step 2: Nuclear sweep for any surviving orphaned claude processes
     time.sleep(0.5)
     orphans = _nuke_claude_processes()
-    killed += orphans
 
-    # Step 3: Run stop script for worktree cleanup
-    if BASH:
-        try:
-            subprocess.run(
-                [BASH, str(SCRIPT_DIR / "claude-stop.sh"), "--force", "--location", path],
-                cwd=str(SCRIPT_DIR), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=15,
-            )
-        except Exception:
-            pass
-
-    # Step 4: Clean up ALL state files
-    _cleanup_state_files(path)
-
-    # Step 5: Reset [!] tasks back to [ ] (agents are dead)
-    task_file = os.path.join(path, "TASKS.md")
-    tasks_reset = 0
-    if os.path.exists(task_file):
-        try:
-            content = Path(task_file).read_text(encoding="utf-8")
-            lines = content.splitlines(True)
-            new_lines = []
-            for l in lines:
-                if l.startswith("[!] "):
-                    new_lines.append("[ ] " + l[4:])
-                    tasks_reset += 1
-                else:
-                    new_lines.append(l)
-            if tasks_reset > 0:
-                Path(task_file).write_text("".join(new_lines), encoding="utf-8")
-        except OSError:
-            pass
-
-    # Step 6: Deregister from instances
+    # Step 3: Deregister from instances
     _deregister_instance(path)
 
-    return jsonify({
-        "ok": True, "killed": killed, "orphans": orphans,
-        "tasks_reset": tasks_reset,
-    })
+    return jsonify({"ok": True, "orphans": orphans})
 
 
 @app.route("/api/stop-all", methods=["POST"])
@@ -810,26 +652,14 @@ def api_cancel_stop_all():
 
 
 def _execute_stop_all():
-    """Force-stop all running locations using direct process tree kills."""
+    """Force-stop all running locations via claude-stop.sh."""
     global _shutdown_timer
     locs = load_locations()
     for loc in locs:
         p = loc["path"]
         lock = os.path.join(p, ".claude-start.lock")
         if os.path.exists(lock):
-            # Direct tree kill — much more reliable than spawning bash
-            _kill_all_known_pids(p)
-            # Also run stop script for worktree/task cleanup
-            if BASH:
-                try:
-                    subprocess.Popen(
-                        [BASH, str(SCRIPT_DIR / "claude-stop.sh"), "--force", "--location", p],
-                        cwd=str(SCRIPT_DIR),
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
-                except Exception:
-                    pass
-            _cleanup_state_files(p)
+            _run_stop_script(p, force=True, timeout=10)
 
     # Nuclear sweep for any remaining orphans
     _nuke_claude_processes()
