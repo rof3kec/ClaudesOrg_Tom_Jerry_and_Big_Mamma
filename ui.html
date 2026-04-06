@@ -56,6 +56,10 @@ html,body{height:100%;background:var(--bg-0);color:var(--text-1);font-family:var
 .agent-info{flex:1;min-width:0;margin-left:4px}
 .agent-name{font-size:13px;font-weight:500;color:var(--text-0)}
 .agent-detail{font-size:11px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-spec{display:flex;align-items:center;gap:4px;margin-top:2px}
+.agent-spec-select{padding:1px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg-0);color:var(--text-2);font-size:10px;cursor:pointer;outline:none;font-family:var(--font);max-width:120px;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0,0 L4,5 L8,0' fill='%23484f58'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 4px center;padding-right:14px}
+.agent-spec-select:hover{border-color:var(--text-3);color:var(--text-1)}
+.agent-spec-select:focus{border-color:var(--blue)}
 .agent-status{width:8px;height:8px;border-radius:50%;margin-left:8px;flex-shrink:0}
 .status-running{background:var(--green);box-shadow:0 0 4px var(--green)}
 .status-idle{background:var(--text-3)}
@@ -379,7 +383,7 @@ html,body{height:100%;background:var(--bg-0);color:var(--text-1);font-family:var
   <textarea id="tasks-textarea" placeholder="# Tasks&#10;&#10;[ ] Your first task&#10;[ ] Another task" spellcheck="false"></textarea>
   <div class="editor-footer">
     <div class="editor-hint"><kbd>Ctrl+S</kbd> save &middot; <kbd>Esc</kbd> close</div>
-    <div class="editor-hint">Prefixes: [ ] pending &middot; [!] running &middot; [x] done &middot; [-] failed</div>
+    <div class="editor-hint">Prefixes: [ ] pending &middot; [!] running &middot; [q] qa &middot; [x] done &middot; [-] failed</div>
   </div>
 </div>
 
@@ -398,6 +402,8 @@ let currentState = null;
 let logFilter = 'all';
 let logEtag = '';
 let connected = true;
+let jerrySpecializations = [];
+let jerrySpecs = {};
 
 // ── Mini character icons for filter buttons ───────────────────────────────────
 
@@ -441,12 +447,12 @@ const FILTERS = [
   { id: 'spike',     label: iconSpikeMini() + ' Spike' },
 ];
 
-const STATUS_ICONS = { pending: '\u25CB', in_progress: '\u25D0', done: '\u2713', failed: '\u2717' };
+const STATUS_ICONS = { pending: '\u25CB', in_progress: '\u25D0', qa: '\u29B8', done: '\u2713', failed: '\u2717' };
 const STATUS_COLORS = {
   pending: 'var(--text-1)', in_progress: 'var(--yellow)',
-  done: 'var(--green)',     failed: 'var(--red)',
+  qa: 'var(--purple)',      done: 'var(--green)',     failed: 'var(--red)',
 };
-const STATUS_ORDER = { in_progress: 0, pending: 1, failed: 2, done: 3 };
+const STATUS_ORDER = { in_progress: 0, qa: 1, pending: 2, failed: 3, done: 4 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -495,6 +501,7 @@ function renderLocations(overview) {
     const running = ov ? ov.running : false;
     const parts = [];
     if (ov && ov.in_progress > 0) parts.push(ov.in_progress + ' running');
+    if (ov && ov.qa > 0) parts.push(ov.qa + ' qa');
     if (ov && ov.pending > 0) parts.push(ov.pending + ' pending');
     const counts = parts.join(' \u00B7 ');
 
@@ -724,9 +731,22 @@ function renderAgents(agents) {
     } else {
       detail = '<div class="agent-detail" style="color:var(--text-3)">' + esc(a.role) + '</div>';
     }
+
+    // Specialization dropdown for Jerry agents
+    let specHtml = '';
+    if (a.id.startsWith('jerry_') && jerrySpecializations.length > 0) {
+      const slotNum = a.id.split('_')[1];
+      const curSpec = a.spec || 'fullstack';
+      specHtml = '<div class="agent-spec"><select class="agent-spec-select" onchange="updateJerrySpec(' + slotNum + ', this.value)" title="Specialization">';
+      for (const s of jerrySpecializations) {
+        specHtml += '<option value="' + s.id + '"' + (curSpec === s.id ? ' selected' : '') + '>' + esc(s.label) + '</option>';
+      }
+      specHtml += '</select></div>';
+    }
+
     return '<div class="agent-item">'
       + getCharacter(a.id, a.state)
-      + '<div class="agent-info"><div class="agent-name">' + esc(a.name) + '</div>' + detail + '</div>'
+      + '<div class="agent-info"><div class="agent-name">' + esc(a.name) + '</div>' + detail + specHtml + '</div>'
       + '<div class="agent-status status-' + a.state + '" title="' + a.state + '"></div>'
       + '</div>';
   }).join('');
@@ -743,25 +763,32 @@ function renderTasks(tasks) {
   }
 
   // Counts
-  const c = { pending: 0, in_progress: 0, done: 0, failed: 0 };
+  const c = { pending: 0, in_progress: 0, qa: 0, done: 0, failed: 0 };
   tasks.forEach(t => c[t.status]++);
   const parts = [];
   if (c.in_progress) parts.push(c.in_progress + ' running');
+  if (c.qa) parts.push(c.qa + ' qa');
   if (c.pending) parts.push(c.pending + ' pending');
   if (c.done) parts.push(c.done + ' done');
   if (c.failed) parts.push(c.failed + ' failed');
   $('task-counts').textContent = parts.join(' \u00B7 ');
 
-  // Only show WIP task line numbers
+  // Show WIP + QA-ready task line numbers
   const wip = tasks.filter(t => t.status === 'in_progress');
-  if (wip.length === 0) {
+  const qa = tasks.filter(t => t.status === 'qa');
+  if (wip.length === 0 && qa.length === 0) {
     el.innerHTML = '';
     return;
   }
 
-  el.innerHTML = '<div class="wip-tags">'
-    + wip.map(t => '<span class="wip-tag" title="' + esc(t.desc) + '">#' + t.line + '</span>').join('')
-    + '</div>';
+  let tags = '';
+  if (wip.length > 0) {
+    tags += wip.map(t => '<span class="wip-tag" title="' + esc(t.desc) + '">#' + t.line + '</span>').join('');
+  }
+  if (qa.length > 0) {
+    tags += qa.map(t => '<span class="wip-tag" style="background:rgba(188,140,255,.15);color:var(--purple);border-color:rgba(188,140,255,.25)" title="QA: ' + esc(t.desc) + '">QA #' + t.line + '</span>').join('');
+  }
+  el.innerHTML = '<div class="wip-tags">' + tags + '</div>';
 }
 
 // ── Render: Log filters ────────────────────────────────────────────────────────
@@ -955,8 +982,10 @@ function updateTitle() {
     return;
   }
   const r = currentState.tasks.filter(t => t.status === 'in_progress').length;
+  const q = currentState.tasks.filter(t => t.status === 'qa').length;
   const p = currentState.tasks.filter(t => t.status === 'pending').length;
   if (r > 0) document.title = '(' + r + ' running) The House';
+  else if (q > 0) document.title = '(' + q + ' qa) The House';
   else if (p > 0) document.title = '(' + p + ' pending) The House';
   else document.title = 'The House';
 }
@@ -1018,6 +1047,7 @@ function selectLocation(idx) {
 
   renderLocations();
   renderFilters();
+  loadJerrySpecs();
   poll();
 }
 
@@ -1106,6 +1136,31 @@ async function retryTask(line) {
   await api('POST', '/api/task/retry', { path: locations[selectedIdx].path, line });
   toast('Task queued for retry', 'info');
   poll();
+}
+
+// ── Jerry Specializations ─────────────────────────────────────────────────────
+
+async function updateJerrySpec(slotNum, specId) {
+  if (selectedIdx < 0) return;
+  const loc = locations[selectedIdx];
+  // Update local cache
+  jerrySpecs[String(slotNum)] = specId;
+  // Save to backend
+  const res = await api('PUT', '/api/jerry-specs', { path: loc.path, specs: jerrySpecs });
+  if (res.error) { toast(res.error, 'error'); return; }
+  const specLabel = jerrySpecializations.find(s => s.id === specId)?.label || specId;
+  toast('Jerry #' + slotNum + ' \u2192 ' + specLabel, 'success');
+}
+
+async function loadJerrySpecs() {
+  if (selectedIdx < 0) return;
+  const loc = locations[selectedIdx];
+  try {
+    jerrySpecs = await api('GET', '/api/jerry-specs?path=' + encodeURIComponent(loc.path));
+    if (jerrySpecs.error) jerrySpecs = {};
+  } catch (e) {
+    jerrySpecs = {};
+  }
 }
 
 // ── Start / Stop ───────────────────────────────────────────────────────────────
@@ -1328,6 +1383,12 @@ window.addEventListener('beforeunload', () => {
 async function init() {
   // Cancel any pending shutdown (handles page refresh — page reloaded before 5s timer fires)
   try { await api('POST', '/api/cancel-stop-all'); } catch (e) {}
+
+  // Load available specializations
+  try {
+    const specs = await api('GET', '/api/specializations');
+    if (Array.isArray(specs)) jerrySpecializations = specs;
+  } catch (e) {}
 
   // Auto-discover running instances before loading locations
   try {
