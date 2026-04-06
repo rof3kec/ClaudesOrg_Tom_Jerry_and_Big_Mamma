@@ -1,38 +1,45 @@
 # Tom, Jerry & Big Mamma Production System
-##  🏠 THE HOUSE
+##  THE HOUSE
 
   Autonomous Claude task processing system
 
-    👩🏽  Big Mamma .............. Supervisor (runs the house, bosses everyone)
-    🐱  Tom the Cat ............ Primary Worker (chases tasks like mice)
-    🐭  Jerry x2 ............... Parallel Workers (sneak through worktrees)
-    🐶  Spike the Bulldog ...... QA Enforcer (nobody ships bugs on HIS watch)
+    Big Mamma .............. Supervisor (runs the house, bosses everyone)
+    Tom the Cat ............ Primary Worker (chases tasks like mice)
+    Jerry xN ............... Parallel Workers (sneak through worktrees, specializable)
+    Spike the Bulldog ...... QA Enforcer (nobody ships bugs on HIS watch)
 
-  Five bash scripts. One glorious household of barely-controlled chaos.
-  Self-healing, auto-pushing, parallel-executing, and funny about it.
+  Five bash scripts, a web dashboard, and one glorious household of
+  barely-controlled chaos. Self-healing, auto-pushing, parallel-executing,
+  and funny about it.
 
   "If I've told you once, I've told you a THOUSAND times..."
-                                                   — Big Mamma
+                                                   -- Big Mamma
 
 ##  THE CAST (FILES)
 
-  claude-start.sh       Opens the House — launches everyone in one command.
+  claude-start.sh       Opens the House -- launches everyone in one command.
                         Ctrl+C = Big Mamma kicks everyone out.
 
-  claude-worker.sh      🐱 Tom — reads TASKS.md, pounces on the first
+  claude-worker.sh      Tom -- reads TASKS.md, pounces on the first
                         pending task, runs Claude Code on it, marks it
-                        done or failed (*splat*), repeats.
+                        [q] for QA, repeats.
 
-  claude-supervisor.sh  👩🏽 Big Mamma — coordinates all workers, deploys
-                        up to 2 Jerrys in git worktrees for independent
+  claude-supervisor.sh  Big Mamma -- coordinates all workers, deploys
+                        up to N Jerrys in git worktrees for independent
                         tasks, commits, pushes, cleans up, bosses everyone.
 
-  claude-qa.sh          🐶 Spike — monitors completed tasks, sniffs for
-                        build/lint/type errors, injects fix tasks when he
-                        finds a mess. "Listen here, pussycat..."
+  claude-qa.sh          Spike -- monitors [q] tasks, sniffs for
+                        build/lint/type errors, promotes to [x] on pass,
+                        injects fix tasks when he finds a mess.
 
-  claude-stop.sh        Big Mamma says "EVERYBODY OUT!" — kills all
+  claude-stop.sh        Big Mamma says "EVERYBODY OUT!" -- kills all
                         processes and cleans up state files.
+
+  ui.py + ui.html       Web dashboard (Flask). Live status, log streaming,
+                        task editing, Jerry specialization controls.
+
+  Start Dashboard.bat   Windows launcher -- opens the dashboard in browser.
+  Start Dashboard.command   macOS launcher.
 
   TASKS.md              The task queue file (auto-created if missing).
 
@@ -51,11 +58,30 @@
 
      ./claude-start.sh --auto --location D:/Projects/MyApp
 
+  WEB DASHBOARD
+
+  The dashboard gives you a live browser UI for monitoring and controlling
+  the House. Start it with:
+
+     python ui.py                   # or double-click "Start Dashboard.bat"
+
+  Then open http://localhost:5005. Features:
+
+  - Live agent status (Tom, Jerrys, Spike, Big Mamma) with state indicators
+  - Task list with counts (pending, running, QA, done, failed)
+  - Inline task editor (add/edit tasks without touching TASKS.md by hand)
+  - Log streaming with per-character filtering (Big Mamma / Tom / Spike)
+  - Jerry specialization dropdowns (change roles on the fly)
+  - Start/Stop controls for the House
+  - Multi-project support (manage multiple --location instances)
+  - Auto-discovers running instances
+
 TASK FILE FORMAT (TASKS.md)
 
-  [ ] This task is pending — Tom will pounce on it
-  [!] This task is in progress — Tom is chasing it right now (don't edit)
-  [x] This task is done (cleaned up after Spike validates)
+  [ ] This task is pending -- Tom will pounce on it
+  [!] This task is in progress -- Tom is chasing it right now (don't edit)
+  [q] This task is ready for QA -- Spike needs to inspect it
+  [x] This task is done -- Spike approved it
   [-] This task failed (Tom ran into a wall)
 
   Tasks are processed top-to-bottom. Only the first pending [ ] task runs
@@ -87,6 +113,8 @@ TASK FILE FORMAT (TASKS.md)
   ./claude-start.sh --location D:/Projects/MyApp       Work in another directory
   ./claude-start.sh --branch wed-dev                   Push to a specific branch
   ./claude-start.sh --tasks TODO.md                    Use a different task file
+  ./claude-start.sh --jerries 4                        Spawn 4 parallel Jerry workers
+  ./claude-start.sh --jerries 0                        Disable parallel workers
   ./claude-start.sh --main                             Merge to main when done
   ./claude-start.sh --auto --location D:/Projects/MyApp --branch feat --main
 
@@ -102,73 +130,95 @@ TASK FILE FORMAT (TASKS.md)
 
   HOW IT WORKS
 
-  🐱 TOM THE CAT (claude-worker.sh)
+  TOM THE CAT (claude-worker.sh)
   ──────────────────────────────────
   1. Scans TASKS.md for the first line starting with [ ]
   2. POUNCES! Marks it [!] (in progress)
   3. Runs: claude -p "task description"
-  4. If exit 0 -> marks [x] "Tom CAUGHT it!"
+  4. If exit 0 -> marks [q] (ready for QA) "Tom CAUGHT it!"
      If exit != 0 -> marks [-] "*SPLAT* Tom ran into a wall!"
   5. Catches his breath for 2 seconds, then chases the next [ ] task
   6. If no pending tasks, sits by the window looking bored (polls every 10s)
   7. Writes status to .worker-status for Big Mamma's awareness
 
-  🐭 JERRY x2 (spawned by Big Mamma)
+  JERRY xN (spawned by Big Mamma)
   ────────────────────────────────────
   Big Mamma analyzes pending tasks for independence. When Tom is busy
   and 2+ tasks are pending, she asks Claude to identify tasks that can
   safely run in parallel (different files/features, no dependencies).
 
-  Up to 2 Jerrys can scurry simultaneously, each in its own git
-  worktree (isolated hideout). This means up to 3 tasks execute
-  at once: 1 Tom + 2 Jerrys.
+  Jerry count is configurable with --jerries N (default: 2). Each Jerry
+  runs in its own git worktree (isolated hideout). This means up to N+1
+  tasks execute at once: 1 Tom + N Jerrys.
+
+  JERRY SPECIALIZATIONS
+
+  Each Jerry can be assigned a role that influences which tasks it picks
+  up and what system prompt it receives:
+
+    fullstack (default) .. General-purpose, no preference
+    architect ............ System design, project structure, patterns
+    backend .............. APIs, services, server logic, middleware
+    frontend ............. UI, components, styling, layout
+    data ................. Data models, DB schemas, migrations, queries
+    platform ............. CI/CD, Docker, infra, deployment
+    qa ................... Tests, coverage, edge cases
+    design ............... Design tokens, theming, UI patterns
+
+  Specializations are set via the web dashboard dropdown or by writing
+  .house-jerry-specs.json (slot-to-role mapping). When tasks are queued:
+
+  1. Pass 1: Specialized Jerrys get tasks matching their keywords first
+  2. Pass 2: Remaining free slots fill with any unassigned task
 
   When a Jerry finishes:
-  - Success -> Big Mamma merges the worktree branch, marks task [x]
+  - Success -> Big Mamma merges the worktree branch, marks task [q]
   - Merge conflict -> "Same old story..." task re-queued for Tom
   - Failure -> Jerry "got caught in a mousetrap!" task re-queued
 
   Jerrys are instructed to edit files only (no builds or installs)
   since Spike validates everything after merge.
 
-  👩🏽 BIG MAMMA (claude-supervisor.sh)
-  ─────────────────────────────────────
+  BIG MAMMA (claude-supervisor.sh)
+  ─────────────────────────────────
   1. Every 15 seconds, counts completed tasks in TASKS.md
-  2. If new completions detected:
+  2. If new [q] tasks detected:
      a. Debounces 30 seconds ("Hold your horses...")
      b. Stages, commits locally ("Packaging up the work...")
      c. Waits for Spike's verdict before pushing
   3. Manages the Jerrys (spawn, monitor, merge, cleanup)
   4. Detects stale tasks ("THOMAS! Did you fall ASLEEP?!")
-  5. After Spike validates, tidies the task list
-  6. If all tasks done, sends Tom to sleep ("I got my EYE on you")
-  7. Optionally merges to main ("Moving this to the MAIN STAGE!")
+  5. After Spike validates ([q] -> [x]), tidies the task list
+  6. If Spike is not running, auto-promotes [q] -> [x]
+  7. If all tasks done, sends Tom to sleep ("I got my EYE on you")
+  8. Optionally merges to main ("Moving this to the MAIN STAGE!")
 
-  🐶 SPIKE THE BULLDOG (claude-qa.sh)
-  ────────────────────────────────────
-  Monitors TASKS.md for newly completed tasks. When detected:
+  SPIKE THE BULLDOG (claude-qa.sh)
+  ────────────────────────────────
+  Monitors TASKS.md for [q] (QA-ready) tasks. When detected:
 
   1. Waits for Tom and Jerrys to finish (sits by the door, one eye open)
   2. Runs validation checks (*sniff sniff*):
      - Spike uses Claude to auto-detect your tech stack and run the
        appropriate build, compile, lint, and type-check commands
      - Works for ANY project: TypeScript, Python, Rust, Go, C#, etc.
-  3. If ALL pass -> *happy bark* "ALL CLEAR!" writes VALIDATED_DONE count
+  3. If ALL pass -> *happy bark* "ALL CLEAR!" promotes [q] -> [x]
      -> Big Mamma pushes and cleans up
   4. If ANY fail -> *GRRR* "CLEAN. THIS. UP. NOW."
      -> injects [AUTO-FIX] task -> Tom picks it up -> Spike re-checks
   5. After 3 failed fix attempts -> *exhausted sigh* "Fine. Ship it."
 
-  This creates a self-healing loop: Tom does task -> Spike inspects ->
-  if broken, Spike sends Tom back to fix -> all without human intervention.
+  This creates a self-healing loop: Tom does task -> marks [q] ->
+  Spike inspects -> if broken, Spike sends Tom back to fix ->
+  all without human intervention.
 
   TASK CLEANUP (after Spike's approval)
   ──────────────────────────────────────
-  When Spike passes, Big Mamma removes completed [x] tasks from TASKS.md
-  to keep the house clean. Safety fence: Spike writes VALIDATED_DONE=N (the
-  exact count of done tasks at check time). Big Mamma only removes
-  up to N lines. Any tasks that completed AFTER Spike started checking are
-  left for the next inspection.
+  When Spike promotes [q] -> [x], Big Mamma removes completed tasks
+  from TASKS.md to keep the house clean. Safety fence: Spike writes
+  VALIDATED_DONE=N (the exact count of done tasks at check time).
+  Big Mamma only removes up to N lines. Any tasks that completed
+  AFTER Spike started checking are left for the next inspection.
 
   Cleanup only runs when no workers are active (no line-number references
   would be invalidated).
@@ -179,7 +229,7 @@ TASK FILE FORMAT (TASKS.md)
   puts Tom to sleep via a .worker-hibernate signal file.
 
   While hibernating:
-  - Tom does NOT call Claude — zero token usage
+  - Tom does NOT call Claude -- zero token usage
   - Tom checks the signal file every 30 seconds (dreaming of mice)
   - Big Mamma keeps polling TASKS.md every 15 seconds (she never rests)
 
@@ -188,7 +238,7 @@ TASK FILE FORMAT (TASKS.md)
   - Spike injects an [AUTO-FIX] task
   - Big Mamma exits or crashes (cleanup trap removes signal file)
 
-  Leave the system running indefinitely — it costs nothing while idle.
+  Leave the system running indefinitely -- it costs nothing while idle.
 
   STALE TASK RECOVERY ("THOMAS!!")
   ────────────────────────────────
@@ -227,19 +277,20 @@ TASK FILE FORMAT (TASKS.md)
   INTER-PROCESS COMMUNICATION
 
 
-  The household uses file-based IPC (no sockets, no pipes — we keep it
+  The household uses file-based IPC (no sockets, no pipes -- we keep it
   old school, like a cartoon):
 
   .worker-status         Tom's state: idle/running/hibernating,
                          PIDs, current task, timestamps
-  .parallel-status-0     Jerry #0's state
-  .parallel-status-1     Jerry #1's state
+  .parallel-status-N     Jerry #N's state (includes SPEC= field)
   .qa-status             Spike's state: idle/checking/passed/failed,
                          VALIDATED_DONE count, error details
   .worker-hibernate      Signal file: exists = Tom should nap
   .claude-worker.pid     Claude process PID (for liveness checks)
   .claude-start.lock     Prevents two houses from opening at once
   .tasks.lock/           Directory-based mutex for TASKS.md edits
+  .house-jerries         Jerry slot count (written by claude-start.sh)
+  .house-jerry-specs.json  Jerry specialization mapping (slot -> role)
 
   All status files are auto-cleaned on shutdown.
 
@@ -251,8 +302,7 @@ TASK FILE FORMAT (TASKS.md)
   claude-supervisor.log          Big Mamma's ledger
   claude-supervisor-verbose.log  Git command output (verbose)
   claude-qa.log                  Spike's patrol report
-  claude-parallel-0.log          Jerry #0 Claude output
-  claude-parallel-1.log          Jerry #1 Claude output
+  claude-parallel-N.log          Jerry #N Claude output
 
   When using claude-start.sh, the three main logs stream live to terminal.
   Task descriptions longer than 10 words are truncated with (...) in logs.
@@ -262,12 +312,13 @@ TASK FILE FORMAT (TASKS.md)
   - Will NOT push to main or master ("Big Mamma didn't raise no fool")
   - Debounces commits so rapid completions batch together
   - Never interrupts Tom mid-task
-  - Spike validates before push — self-heals up to 3 times
+  - Spike validates [q] tasks before they become [x] -- self-heals up to 3 times
   - Only cleans tasks that Spike has validated (VALIDATED_DONE fence)
+  - If Spike is offline, Big Mamma auto-promotes [q] -> [x] with a warning
   - Line-number safety: no cleanup while workers hold task references
   - Jerrys use git worktrees (isolated hideouts, no file conflicts)
   - Merge conflicts -> task re-queued for sequential, no data loss
-  - Hibernates when idle — zero API token usage
+  - Hibernates when idle -- zero API token usage
   - Pull --rebase on push conflicts, with force-with-lease fallback
   - Cross-platform process management (Windows/MSYS taskkill fallback)
   - Ctrl+C kills all processes cleanly via trap handlers
@@ -276,9 +327,10 @@ TASK FILE FORMAT (TASKS.md)
   ADDING TASKS WHILE RUNNING
 
   You can edit TASKS.md while the House is running. Just add new [ ] lines
-  at the bottom. Tom will pounce on them on his next cycle.
+  at the bottom. Tom will pounce on them on his next cycle. You can also
+  use the web dashboard's task editor.
 
-  Do NOT edit lines marked [!] — Tom or a Jerry is actively chasing those.
+  Do NOT edit lines marked [!] -- Tom or a Jerry is actively chasing those.
 
   STOPPING
 
@@ -318,6 +370,10 @@ TASK FILE FORMAT (TASKS.md)
   Problem: Spike keeps failing on the same error
   Fix:     After 3 fix attempts, Spike gives up ("I'm too old for this")
            and allows push with warnings. Check claude-qa.log.
+
+  Problem: Tasks stuck at [q] and never promoted
+  Fix:     Spike may not be running. Big Mamma will auto-promote [q] -> [x]
+           if she detects Spike is offline, but only after all workers idle.
 
 
   CAST CREDITS
