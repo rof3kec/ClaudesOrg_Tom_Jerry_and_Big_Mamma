@@ -242,11 +242,21 @@ house_log "Commit debounce: ${COMMIT_BATCH_WAIT}s"
 house_log "Roll call: $(count_done) done, $(count_qa_ready) qa-ready, $(count_in_progress) in-progress, $(count_pending) pending, $(count_failed) failed"
 house_log "\"Now let's get this house in ORDER.\""
 
-# ─── Startup recovery: reset orphaned [!] tasks ─────────────────────────────
+# ─── Startup recovery: reset orphaned tasks ──────────────────────────────────
 # Tom starts ~3s before the supervisor, so he may already have a live [!] task.
 # Don't blindly reset it — check if Tom is alive first.
+# Also reset stale [q] tasks from previous sessions — the work may have been
+# merged, but Spike should re-validate from scratch on a fresh start.
 _update_task_counts
 STARTUP_STALE=$_COUNT_IP
+STARTUP_QA=$_COUNT_QA
+
+# Reset stale [q] tasks — previous session's Spike didn't finish validating
+if [ "$STARTUP_QA" -gt 0 ]; then
+  house_log "👩🏽🧹 $STARTUP_QA task(s) stuck at [q] from last session. Resetting to pending."
+  sedi 's/^\[q\] /[ ] /' "$TASK_FILE"
+fi
+
 if [ "$STARTUP_STALE" -gt 0 ]; then
   _tom_alive=false
   _tom_task_line=""
@@ -277,8 +287,8 @@ if [ "$STARTUP_STALE" -gt 0 ]; then
     sedi 's/^\[!\] /[ ] /' "$TASK_FILE"
     house_log "   👩🏽✓ Reset $STARTUP_STALE orphaned task(s) back to pending. Fresh start."
   fi
-  LAST_DONE_COUNT=$(count_done)
 fi
+LAST_DONE_COUNT=$(count_done)
 
 # ─── Main loop ───────────────────────────────────────────────────────────────
 
