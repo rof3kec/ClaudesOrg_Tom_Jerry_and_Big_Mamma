@@ -243,14 +243,41 @@ house_log "Roll call: $(count_done) done, $(count_qa_ready) qa-ready, $(count_in
 house_log "\"Now let's get this house in ORDER.\""
 
 # ─── Startup recovery: reset orphaned [!] tasks ─────────────────────────────
+# Tom starts ~3s before the supervisor, so he may already have a live [!] task.
+# Don't blindly reset it — check if Tom is alive first.
 _update_task_counts
 STARTUP_STALE=$_COUNT_IP
 if [ "$STARTUP_STALE" -gt 0 ]; then
-  house_log "👩🏽😤 $STARTUP_STALE task(s) stuck at [!] from last session! Nobody's working yet — resetting ALL."
-  house_log "   \"Lord have mercy, y'all left the STOVE on!\""
-  sedi 's/^\[!\] /[ ] /' "$TASK_FILE"
+  _tom_alive=false
+  _tom_task_line=""
+  if is_claude_alive; then
+    _tom_alive=true
+  fi
+  if read_worker_status 2>/dev/null && [ "$WSTAT_STATE" = "running" ] && \
+     [ -n "$WSTAT_WORKER_PID" ] && is_process_alive "$WSTAT_WORKER_PID"; then
+    _tom_alive=true
+    _tom_task_line="$WSTAT_TASK_LINE"
+  fi
+
+  if [ "$_tom_alive" = true ] && [ -n "$_tom_task_line" ]; then
+    # Tom is already working — keep his task, reset any other stale [!] tasks
+    _stale_others=$(( STARTUP_STALE - 1 ))
+    if [ "$_stale_others" -gt 0 ]; then
+      house_log "👩🏽😤 Tom's on task #$_tom_task_line, but $_stale_others other [!] task(s) are orphaned. Resetting those."
+      awk -v tl="$_tom_task_line" 'NR==tl{print; next} /^\[!\] /{sub(/^\[!\] /,"[ ] ")} {print}' \
+        "$TASK_FILE" > "$TASK_FILE.tmp" && mv "$TASK_FILE.tmp" "$TASK_FILE"
+    else
+      house_log "👩🏽 Tom's already chasing task #$_tom_task_line. No orphans. Good boy."
+    fi
+  elif [ "$_tom_alive" = true ]; then
+    house_log "👩🏽 Tom's alive but task line unknown. Leaving [!] tasks alone to be safe."
+  else
+    house_log "👩🏽😤 $STARTUP_STALE task(s) stuck at [!] from last session! Nobody's working yet — resetting ALL."
+    house_log "   \"Lord have mercy, y'all left the STOVE on!\""
+    sedi 's/^\[!\] /[ ] /' "$TASK_FILE"
+    house_log "   👩🏽✓ Reset $STARTUP_STALE orphaned task(s) back to pending. Fresh start."
+  fi
   LAST_DONE_COUNT=$(count_done)
-  house_log "   👩🏽✓ Reset $STARTUP_STALE orphaned task(s) back to pending. Fresh start."
 fi
 
 # ─── Main loop ───────────────────────────────────────────────────────────────
