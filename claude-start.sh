@@ -309,9 +309,11 @@ grep -qxF "$CURRENT_DIR" "$INSTANCES_FILE" 2>/dev/null || echo "$CURRENT_DIR" >>
 WORKER_PID=""
 SUPERVISOR_PID=""
 QA_PID=""
+SDIKE_PID=""
 TAIL_PID=""
 CLEANING_UP=false
 SPIKE_LAST_RESTART=0
+SDIKE_THRESHOLD=5
 
 cleanup() {
   # Prevent re-entrant cleanup (trap EXIT fires after trap INT/TERM)
@@ -336,10 +338,11 @@ cleanup() {
   [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
   [ -n "$WORKER_PID" ] && kill_tree "$WORKER_PID" && echo "  🐱 Tom dragged away from the keyboard (PID $WORKER_PID)"
   [ -n "$QA_PID" ] && kill_tree "$QA_PID" && echo "  🐶 Spike called off patrol (PID $QA_PID)"
+  [ -n "$SDIKE_PID" ] && kill_tree "$SDIKE_PID" && echo "  🐕 Sdike sent home (PID $SDIKE_PID)"
   [ -n "$SUPERVISOR_PID" ] && kill_tree "$SUPERVISOR_PID" && echo "  👩🏽 Big Mamma hangs up her apron (PID $SUPERVISOR_PID)"
   rm -f "$LOCK_FILE"
-  rm -f .claude-worker.pid .claude-supervisor.pid .claude-qa.pid .worker-status .qa-status .parallel-status-*
-  rm -rf .tasks.lock .worktrees
+  rm -f .claude-worker.pid .claude-supervisor.pid .claude-qa.pid .claude-qa-sdike.pid .worker-status .qa-status .qa-status-sdike .parallel-status-*
+  rm -rf .tasks.lock .worktrees .qa-running.lock
   rm -f .worker-hibernate .house-jerries
   wait 2>/dev/null
   echo ""
@@ -389,7 +392,7 @@ echo ""
 echo "$JERRIES" > .house-jerries
 
 # Rotate old logs if they're too large (>1MB)
-for logfile in claude-worker.log claude-qa.log claude-supervisor.log claude-supervisor-verbose.log claude-worker-output.log claude-parallel-*.log; do
+for logfile in claude-worker.log claude-qa.log claude-qa-sdike.log claude-supervisor.log claude-supervisor-verbose.log claude-worker-output.log claude-parallel-*.log; do
   if [ -f "$logfile" ]; then
     LOG_SIZE=$(wc -c < "$logfile" 2>/dev/null | tr -d ' ')
     if [ "${LOG_SIZE:-0}" -gt 1048576 ]; then
@@ -400,7 +403,7 @@ for logfile in claude-worker.log claude-qa.log claude-supervisor.log claude-supe
 done
 
 # Ensure log files exist before tail -f
-touch claude-worker.log claude-qa.log claude-supervisor.log 2>/dev/null
+touch claude-worker.log claude-qa.log claude-qa-sdike.log claude-supervisor.log 2>/dev/null
 
 # Start Tom (stdout -> /dev/null, stderr -> log so crashes are visible)
 bash "$SCRIPT_DIR/claude-worker.sh" "$TASK_FILE" $AUTO_MODE > /dev/null 2>> claude-worker.log &
@@ -430,7 +433,7 @@ echo "🏠 The House is OPEN! Watching logs..."
 echo "════════════════════════════════════════════════════════════════"
 
 # Tail all logs together
-tail -f claude-worker.log claude-qa.log claude-supervisor.log 2>/dev/null &
+tail -f claude-worker.log claude-qa.log claude-qa-sdike.log claude-supervisor.log 2>/dev/null &
 TAIL_PID=$!
 
 # Wait for all to keep running — if Tom or Big Mamma dies, close the house
@@ -471,6 +474,36 @@ while true; do
       echo "   *shake* \"Sorry, thought I saw a squirrel.\""
     fi
   fi
+
+  # ── Auto-spawn/de-spawn Sdike (Spike's brother) based on QA queue depth ──
+  QA_QUEUE_COUNT=$(grep -c '^\[q\] ' "$TASK_FILE" 2>/dev/null || echo 0)
+  QA_QUEUE_COUNT="${QA_QUEUE_COUNT:-0}"
+
+  if [ "$QA_QUEUE_COUNT" -ge "$SDIKE_THRESHOLD" ]; then
+    # Spike needs backup — spawn Sdike if not already running
+    if [ -z "$SDIKE_PID" ] || ! kill -0 "$SDIKE_PID" 2>/dev/null; then
+      echo ""
+      echo "🐕 Sdike heard his brother barking — rushing in to help! (${QA_QUEUE_COUNT} tasks in QA)"
+      bash "$SCRIPT_DIR/claude-qa.sh" "$TASK_FILE" sdike > /dev/null 2>> claude-qa-sdike.log &
+      SDIKE_PID=$!
+      echo "$SDIKE_PID" > .claude-qa-sdike.pid
+      echo "🐕 Sdike is on patrol (PID $SDIKE_PID)"
+      echo "   \"I'm here, bro! Let me at 'em!\""
+      echo ""
+    fi
+  else
+    # QA queue is light — send Sdike home if running
+    if [ -n "$SDIKE_PID" ] && kill -0 "$SDIKE_PID" 2>/dev/null; then
+      echo ""
+      echo "🐕 QA queue is light (${QA_QUEUE_COUNT} tasks) — Sdike heads home."
+      echo "   \"Good work, lil' bro. I got it from here.\" — Spike"
+      kill_tree "$SDIKE_PID" 2>/dev/null
+      SDIKE_PID=""
+      rm -f .claude-qa-sdike.pid .qa-status-sdike
+      echo ""
+    fi
+  fi
+
   sleep 5
 done
 
