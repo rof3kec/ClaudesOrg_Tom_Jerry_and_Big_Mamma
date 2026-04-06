@@ -145,8 +145,11 @@ fill_jerry_slots() {
 
   # Reserve first pending task for Tom (unless Tom is already busy)
   local skip_first=1
+  # Check if Tom already has a task: worker status "running" OR Claude PID alive
   if is_claude_alive; then
-    skip_first=0  # Tom is busy — Jerry can take everything
+    skip_first=0
+  elif read_worker_status 2>/dev/null && [ "$WSTAT_STATE" = "running" ]; then
+    skip_first=0
   fi
 
   # Collect candidate tasks (with continuation lines)
@@ -190,7 +193,17 @@ ${_ccont}"
     CAND_DESCS+=("$task_desc")
   done < <(grep -n '^\[ \] ' "$TASK_FILE" 2>/dev/null || true)
 
-  [ ${#CAND_LINES[@]} -eq 0 ] && { PARALLEL_LAST_ANALYSIS=$now_ts; return 1; }
+  if [ ${#CAND_LINES[@]} -eq 0 ]; then
+    local section_pending
+    section_pending=$(sed -n "${ACTIVE_SECTION_START},${ACTIVE_SECTION_END}p" "$TASK_FILE" 2>/dev/null | grep -c '^\[ \] ' || true)
+    if [ "${section_pending:-0}" -gt 0 ]; then
+      house_log "   🐭 $section_pending [ ] task(s) in section but all reserved for Tom (skip_first=$skip_first)"
+    else
+      house_log "   🐭 No [ ] tasks in active section (Tom may have claimed them all)"
+    fi
+    PARALLEL_LAST_ANALYSIS=$now_ts
+    return 1
+  fi
 
   # Track which tasks have been assigned
   local -a task_used=()
@@ -261,15 +274,15 @@ spawn_parallel_worker() {
 
   # Mark task as in-progress (with race-condition guard)
   lock_tasks
-  sedi "${task_line}s/^\[ \] /[!] /" "$TASK_FILE"
-  # Verify the mark stuck
-  local verify
-  verify=$(sed -n "${task_line}p" "$TASK_FILE" 2>/dev/null)
-  if ! echo "$verify" | grep -q '^\[!\] '; then
+  # Pre-check: verify task is still [ ] before claiming (prevents double-claim with Tom)
+  local current
+  current=$(sed -n "${task_line}p" "$TASK_FILE" 2>/dev/null)
+  if ! echo "$current" | grep -q '^\[ \] '; then
     unlock_tasks
     house_log "🐭⚠ Jerry #$slot: task at line $task_line already claimed. Skipping."
     return
   fi
+  sedi "${task_line}s/^\[ \] /[!] /" "$TASK_FILE"
   unlock_tasks
 
   # Create worktree (Jerry's hideout)
