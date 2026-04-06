@@ -285,13 +285,17 @@ spawn_parallel_worker() {
   sedi "${task_line}s/^\[ \] /[!] /" "$TASK_FILE"
   unlock_tasks
 
-  # Create worktree (Jerry's hideout)
+  # Create worktree (Jerry's hideout) — timeout prevents git lock contention
+  # from freezing the entire supervisor loop
   mkdir -p .worktrees
-  if ! git worktree add "$worktree_dir" -b "$branch_name" >> "$VERBOSE_LOG" 2>&1; then
-    house_log "🐭💥 Jerry #$slot couldn't dig his tunnel (worktree failed). Reverting task."
+  if ! timeout 30 git worktree add "$worktree_dir" -b "$branch_name" >> "$VERBOSE_LOG" 2>&1; then
+    house_log "🐭💥 Jerry #$slot couldn't dig his tunnel (worktree failed or timed out). Reverting task."
     lock_tasks
     sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
     unlock_tasks
+    # Clean up partial worktree/branch
+    git worktree remove "$worktree_dir" --force >> "$VERBOSE_LOG" 2>&1 || true
+    git branch -D "$branch_name" >> "$VERBOSE_LOG" 2>&1 || true
     return
   fi
 
