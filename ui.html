@@ -1421,14 +1421,20 @@ document.addEventListener('keydown', e => {
 // ── Shutdown on browser close ──────────────────────────────────────────────────
 
 window.addEventListener('beforeunload', () => {
+  // Mark that THIS tab triggered the unload — sessionStorage survives refresh but not tab close
+  sessionStorage.setItem('house-unloading', '1');
   navigator.sendBeacon('/api/stop-all');
 });
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 
 async function init() {
-  // Cancel any pending shutdown (handles page refresh — page reloaded before 5s timer fires)
-  try { await api('POST', '/api/cancel-stop-all'); } catch (e) {}
+  // Only cancel a pending shutdown if this is a PAGE REFRESH (sessionStorage survives).
+  // If the user closed the tab and opened a new one, sessionStorage is empty → let stop proceed.
+  if (sessionStorage.getItem('house-unloading')) {
+    sessionStorage.removeItem('house-unloading');
+    try { await api('POST', '/api/cancel-stop-all'); } catch (e) {}
+  }
 
   // Load available specializations
   try {
