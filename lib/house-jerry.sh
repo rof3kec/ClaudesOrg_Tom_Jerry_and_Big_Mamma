@@ -13,10 +13,6 @@
 [[ -n "${_HOUSE_JERRY_LOADED:-}" ]] && return 0
 _HOUSE_JERRY_LOADED=1
 
-# ─── Jerry Specs File ──────────────────────────────────────────────────────
-
-JERRY_SPECS_FILE=".house-jerry-specs.json"
-
 # ─── Array State (initialized by supervisor before sourcing) ───────────────
 # P_PIDS[], P_WORKTREES[], P_BRANCHES[], P_TASK_LINES[],
 # P_TASK_DESCS[], P_ACTIVE[] — must be pre-allocated by caller.
@@ -41,75 +37,6 @@ find_free_slot() {
 any_parallel_active() {
   for ((i=0; i<MAX_PARALLEL; i++)); do
     [ "${P_ACTIVE[$i]}" = true ] && return 0
-  done
-  return 1
-}
-
-# ─── Jerry Specializations ─────────────────────────────────────────────────
-
-# Read specialization for a Jerry slot (returns "fullstack" if not set)
-read_jerry_spec() {
-  local slot="$1"
-  if [ ! -f "$JERRY_SPECS_FILE" ]; then
-    echo "fullstack"
-    return
-  fi
-  local spec
-  spec=$(grep -o "\"$slot\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$JERRY_SPECS_FILE" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
-  echo "${spec:-fullstack}"
-}
-
-# Get the role prompt for a specialization
-get_spec_prompt() {
-  local spec="$1"
-  case "$spec" in
-    architect)
-      echo "ROLE: You are a System Architect. Focus on high-level design, project structure, module organization, dependency management, and architectural patterns. Prioritize clean abstractions, separation of concerns, and scalable solutions." ;;
-    backend)
-      echo "ROLE: You are a Backend Engineer. Focus on APIs, server logic, services, request handling, middleware, authentication, and business logic. Prioritize correctness, performance, and clean interfaces." ;;
-    frontend)
-      echo "ROLE: You are a Frontend Engineer. Focus on UI components, styling, layout, user interactions, accessibility, and responsive design. Prioritize user experience and visual polish." ;;
-    data)
-      echo "ROLE: You are a Data Layer Engineer. Focus on data models, database schemas, migrations, ORMs, queries, caching, and data integrity. Prioritize data consistency and efficient access patterns." ;;
-    platform)
-      echo "ROLE: You are a Platform Engineer. Focus on CI/CD pipelines, Docker, infrastructure, deployment, monitoring, and DevOps. Prioritize reliability, automation, and operational excellence." ;;
-    qa)
-      echo "ROLE: You are a QA Engineer. Focus on writing tests, test automation, test coverage, edge cases, and quality assurance. Prioritize thorough testing and catching bugs early." ;;
-    design)
-      echo "ROLE: You are a Design System Engineer. Focus on design tokens, reusable UI components, theming, typography, color systems, and consistent visual language. Prioritize consistency and reusability." ;;
-    *)
-      echo "" ;;  # fullstack — no special role prompt
-  esac
-}
-
-# Get keywords for matching tasks to specializations
-get_spec_keywords() {
-  local spec="$1"
-  case "$spec" in
-    architect) echo "architect design structure refactor pattern module dependency organize" ;;
-    backend) echo "api server endpoint route handler middleware auth service backend database query" ;;
-    frontend) echo "ui component style css html layout render view page frontend react vue" ;;
-    data) echo "data model schema migration database db query orm table column index cache" ;;
-    platform) echo "ci cd pipeline docker deploy infra terraform kubernetes helm monitoring" ;;
-    qa) echo "test spec assert coverage unit integration e2e mock fixture quality" ;;
-    design) echo "design token theme color typography font spacing component library system" ;;
-    *) echo "" ;;
-  esac
-}
-
-# Check if a task description matches a specialization's keywords
-task_matches_spec() {
-  local task_desc="$1"
-  local spec="$2"
-  local keywords
-  keywords=$(get_spec_keywords "$spec")
-  [ -z "$keywords" ] && return 1  # fullstack matches nothing specifically
-  local task_lower
-  task_lower=$(echo "$task_desc" | tr '[:upper:]' '[:lower:]')
-  for kw in $keywords; do
-    if echo "$task_lower" | grep -qiw "$kw"; then
-      return 0
-    fi
   done
   return 1
 }
@@ -143,30 +70,15 @@ fill_jerry_slots() {
 
   house_log "👩🏽🐭 Pending task(s) in '$ACTIVE_SECTION_NAME', $free_slots Jerry slot(s) free — filling them up!"
 
-  # Reserve first pending task for Tom (unless Tom is already busy)
-  local skip_first=1
-  # Check if Tom already has a task: worker status "running" OR Claude PID alive
-  if is_claude_alive; then
-    skip_first=0
-  elif read_worker_status 2>/dev/null && [ "$WSTAT_STATE" = "running" ]; then
-    skip_first=0
-  fi
-
   # Collect candidate tasks (with continuation lines)
+  # No skip_first needed — Big Mamma assigns Tom's tasks separately before this runs
   local -a CAND_LINES=()
   local -a CAND_DESCS=()
-  local skipped=0
   while IFS= read -r candidate; do
     local line_num
     line_num=$(echo "$candidate" | cut -d: -f1)
     [ "$line_num" -lt "$ACTIVE_SECTION_START" ] && continue
     [ "$line_num" -gt "$ACTIVE_SECTION_END" ] && break
-
-    # Leave first pending task for Tom's sequential queue
-    if [ "$skip_first" -gt 0 ] && [ "$skipped" -lt "$skip_first" ]; then
-      skipped=$((skipped + 1))
-      continue
-    fi
 
     local task_desc
     task_desc=$(echo "$candidate" | sed 's/^[0-9]*:\[ \] //')
@@ -197,58 +109,29 @@ ${_ccont}"
     local section_pending
     section_pending=$(sed -n "${ACTIVE_SECTION_START},${ACTIVE_SECTION_END}p" "$TASK_FILE" 2>/dev/null | grep -c '^\[ \] ' || true)
     if [ "${section_pending:-0}" -gt 0 ]; then
-      house_log "   🐭 $section_pending [ ] task(s) in section but all reserved for Tom (skip_first=$skip_first)"
+      house_log "   🐭 $section_pending [ ] task(s) in section but all already claimed"
     else
-      house_log "   🐭 No [ ] tasks in active section (Tom may have claimed them all)"
+      house_log "   🐭 No [ ] tasks in active section"
     fi
     PARALLEL_LAST_ANALYSIS=$now_ts
     return 1
   fi
 
-  # Track which tasks have been assigned
-  local -a task_used=()
-  for ((i=0; i<${#CAND_LINES[@]}; i++)); do task_used+=(false); done
-
   local spawned=0
+  local ti=0
 
-  # Pass 1: Match specialized Jerrys to tasks matching their expertise
+  # Fill free slots with pending tasks (first-come, first-served)
   for ((si=0; si<MAX_PARALLEL; si++)); do
     [ "${P_ACTIVE[$si]}" = true ] && continue
-    local spec
-    spec=$(read_jerry_spec "$si")
-    [ "$spec" = "fullstack" ] && continue
+    [ "$ti" -ge "${#CAND_LINES[@]}" ] && break
 
-    for ((ti=0; ti<${#CAND_LINES[@]}; ti++)); do
-      [ "${task_used[$ti]}" = true ] && continue
-      if task_matches_spec "${CAND_DESCS[$ti]}" "$spec"; then
-        spawn_parallel_worker "$si" "${CAND_LINES[$ti]}" "${CAND_DESCS[$ti]}"
-        if [ "${P_ACTIVE[$si]}" = true ]; then
-          task_used[$ti]=true
-          spawned=$((spawned + 1))
-          house_log "   👩🏽🎯 Matched Jerry #$si ($spec) to task #${CAND_LINES[$ti]}"
-        fi
-        break
-      fi
-    done
-  done
-
-  # Pass 2: Fill remaining free slots with any unassigned task
-  for ((si=0; si<MAX_PARALLEL; si++)); do
-    [ "${P_ACTIVE[$si]}" = true ] && continue
-
-    for ((ti=0; ti<${#CAND_LINES[@]}; ti++)); do
-      [ "${task_used[$ti]}" = true ] && continue
-
-      spawn_parallel_worker "$si" "${CAND_LINES[$ti]}" "${CAND_DESCS[$ti]}"
-      if [ "${P_ACTIVE[$si]}" = true ]; then
-        task_used[$ti]=true
-        spawned=$((spawned + 1))
-      else
-        house_log "🐭⚠ Jerry #$si failed to launch for line ${CAND_LINES[$ti]} — slot still free, trying next task"
-        continue
-      fi
-      break
-    done
+    spawn_parallel_worker "$si" "${CAND_LINES[$ti]}" "${CAND_DESCS[$ti]}"
+    if [ "${P_ACTIVE[$si]}" = true ]; then
+      spawned=$((spawned + 1))
+    else
+      house_log "🐭⚠ Jerry #$si failed to launch for line ${CAND_LINES[$ti]} — slot still free, trying next task"
+    fi
+    ti=$((ti + 1))
   done
 
   PARALLEL_LAST_ANALYSIS=$now_ts
@@ -266,7 +149,7 @@ spawn_parallel_worker() {
   local task_line="$2"
   local task_desc="$3"
   local branch_name="parallel-${slot}-$(date +%s)"
-  local worktree_dir=".worktrees/$branch_name"
+  local worktree_dir=".worktrees/jerry-$slot"
   local status_file=".parallel-status-$slot"
   local log_file="claude-parallel-$slot.log"
 
@@ -285,23 +168,29 @@ spawn_parallel_worker() {
   sedi "${task_line}s/^\[ \] /[!] /" "$TASK_FILE"
   unlock_tasks
 
-  # Create worktree (Jerry's hideout) — timeout prevents git lock contention
-  # from freezing the entire supervisor loop
+  # Clone repo locally — independent .git means zero lock contention with Tom
+  # --depth 1: shallow clone (latest commit only) — fast for large repos (14K+ files)
+  # --no-hardlinks: on Windows, hard links hang when Tom has files open
+  rm -rf "$worktree_dir" 2>/dev/null
   mkdir -p .worktrees
-  if ! timeout 30 git worktree add "$worktree_dir" -b "$branch_name" >> "$VERBOSE_LOG" 2>&1; then
-    house_log "🐭💥 Jerry #$slot couldn't dig his tunnel (worktree failed or timed out). Reverting task."
+  if ! timeout 300 git clone --depth 1 --no-hardlinks --branch "$BRANCH" --single-branch --no-tags . "$worktree_dir" >> "$VERBOSE_LOG" 2>&1; then
+    house_log "🐭💥 Jerry #$slot couldn't dig his tunnel (clone failed). Reverting task."
     lock_tasks
     sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
     unlock_tasks
-    # Clean up partial worktree/branch
-    git worktree remove "$worktree_dir" --force >> "$VERBOSE_LOG" 2>&1 || true
-    git branch -D "$branch_name" >> "$VERBOSE_LOG" 2>&1 || true
+    rm -rf "$worktree_dir" 2>/dev/null
     return
   fi
 
-  # Read specialization for this slot
-  local jerry_spec
-  jerry_spec=$(read_jerry_spec "$slot")
+  # Create task branch in the clone
+  if ! (cd "$worktree_dir" && git checkout -b "$branch_name") >> "$VERBOSE_LOG" 2>&1; then
+    house_log "🐭💥 Jerry #$slot couldn't create task branch. Reverting task."
+    lock_tasks
+    sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
+    unlock_tasks
+    rm -rf "$worktree_dir" 2>/dev/null
+    return
+  fi
 
   # Write Jerry's status (flatten desc for KEY=VALUE format)
   local safe_desc="${task_desc//$'\n'/ }"
@@ -310,7 +199,6 @@ STATE=running
 SLOT=$slot
 TASK_LINE=$task_line
 TASK_DESC=$safe_desc
-SPEC=$jerry_spec
 BRANCH=$branch_name
 WORKTREE=$worktree_dir
 STARTED=$(date +%s)
@@ -329,20 +217,10 @@ EOF
 Project context: $MAMMA_INSTRUCTIONS"
   fi
 
-  # Add specialization role prompt
-  local spec_prompt
-  spec_prompt=$(get_spec_prompt "$jerry_spec")
-  if [ -n "$spec_prompt" ]; then
-    JERRY_CONTEXT="${JERRY_CONTEXT}
-
-$spec_prompt"
-    house_log "   🐭🎓 Jerry #$slot role: $jerry_spec"
-  fi
-
-  # Spawn Claude in Jerry's hideout (worktree)
+  # Spawn Claude in Jerry's hideout (clone) — notify Big Mamma on completion
   (cd "$worktree_dir" && $CLAUDE_SPAWN "$task_desc
 ${JERRY_CONTEXT}
-(IMPORTANT: You are running in an isolated git worktree. Edit files only — do NOT run build, test, or install commands like pnpm install, tsc, etc. A QA worker will verify your changes after merge.)" >> "../../$log_file" 2>&1) &
+(IMPORTANT: You are running in an isolated git worktree. Edit files only — do NOT run build, test, or install commands like pnpm install, tsc, etc. A QA worker will verify your changes after merge.)" >> "../../$log_file" 2>&1; touch "../../$NOTIFICATION_FILE"; kill -USR1 $$ 2>/dev/null) &
 
   P_PIDS[$slot]=$!
   P_TASK_LINES[$slot]="$task_line"
@@ -407,6 +285,20 @@ merge_parallel_worker() {
 
   house_log "🐭🔀 Bringing Jerry #$slot's work home (merging branch $branch)..."
 
+  # Commit any uncommitted work in Jerry's clone
+  local clone_dir="${P_WORKTREES[$slot]}"
+  (cd "$clone_dir" && git add -A && git commit -m "auto: Jerry #$slot work" 2>/dev/null) >> "$VERBOSE_LOG" 2>&1 || true
+
+  # Fetch Jerry's branch from the clone into the main repo
+  if ! git fetch "$clone_dir" "$branch:$branch" >> "$VERBOSE_LOG" 2>&1; then
+    house_log "🐭⚠ Jerry #$slot: couldn't fetch work from clone. Re-queuing task."
+    lock_tasks
+    sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
+    unlock_tasks
+    cleanup_parallel_slot "$slot"
+    return
+  fi
+
   # Commit any uncommitted changes from Tom first
   if has_changes; then
     house_log "   Committing Tom's work-in-progress before merge..."
@@ -445,9 +337,11 @@ cleanup_parallel_slot() {
   local branch="${P_BRANCHES[$slot]}"
   local status_file=".parallel-status-$slot"
 
+  # Remove Jerry's cloned workspace
   if [ -n "$worktree" ]; then
-    git worktree remove "$worktree" --force >> "$VERBOSE_LOG" 2>&1 || true
+    rm -rf "$worktree" 2>/dev/null || true
   fi
+  # Delete task branch from main repo
   if [ -n "$branch" ]; then
     git branch -D "$branch" >> "$VERBOSE_LOG" 2>&1 || true
   fi
