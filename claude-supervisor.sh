@@ -54,6 +54,7 @@ IDLE_SHUTDOWN_AFTER=1800     # 30 min idle with no tasks = graceful shutdown
 IDLE_SHUTDOWN_START=0
 RETRY_MAX=1
 RETRIED_TASKS=""
+NOTIFICATION_FILE=".worker-done"
 
 # Spike (QA) integration
 QA_STATE=""
@@ -145,6 +146,148 @@ is_claude_alive() {
   return 1
 }
 
+# ─── Tom management (Big Mamma assigns tasks directly) ──────────────────────
+
+WORKER_VERBOSE_LOG="claude-worker-output.log"
+TOM_PID=""
+TOM_ACTIVE=false
+TOM_TASK_LINE=""
+TOM_TASK_DESC=""
+TOM_TASK_STARTED=""
+
+assign_next_to_tom() {
+  local sep_line
+  sep_line=$(grep -n '^_{5,}' "$TASK_FILE" 2>/dev/null | head -1 | cut -d: -f1)
+  sep_line="${sep_line:-0}"
+  if ! find_active_section "$TASK_FILE" "$sep_line"; then
+    return 1
+  fi
+
+  while IFS= read -r candidate; do
+    local cand_line
+    cand_line=$(echo "$candidate" | cut -d: -f1)
+    [ "$cand_line" -lt "$ACTIVE_SECTION_START" ] && continue
+    [ "$cand_line" -gt "$ACTIVE_SECTION_END" ] && break
+
+    local cand_desc
+    cand_desc=$(echo "$candidate" | sed 's/^[0-9]*:\[ \] //')
+
+    # Read continuation lines
+    local _cnext=$(( cand_line + 1 ))
+    while [ "$_cnext" -le "$ACTIVE_SECTION_END" ]; do
+      local _ccont
+      _ccont=$(sed -n "${_cnext}p" "$TASK_FILE")
+      if [ -z "$_ccont" ] || echo "$_ccont" | grep -qE '^\[[ xXqQ!-]\] |^#+ |^_{5,}'; then
+        break
+      fi
+      cand_desc="${cand_desc}
+${_ccont}"
+      _cnext=$((_cnext + 1))
+    done
+
+    # Skip status-like lines
+    if echo "$cand_desc" | grep -qiE '^(pending|done|in progress|failed|waiting)(\s|$)'; then
+      continue
+    fi
+
+    # Claim the task
+    lock_tasks
+    local current
+    current=$(sed -n "${cand_line}p" "$TASK_FILE" 2>/dev/null)
+    if ! echo "$current" | grep -q '^\[ \] '; then
+      unlock_tasks
+      continue
+    fi
+    sedi "${cand_line}s/^\[ \] /[!] /" "$TASK_FILE"
+    unlock_tasks
+
+    # Spawn Claude for Tom (in main directory — no clone needed)
+    TOM_TASK_STARTED=$(date +%s)
+    local cmd="claude -p"
+    [ "$AUTO_MODE" = "--auto" ] && cmd="$cmd --dangerously-skip-permissions"
+
+    ( $cmd "$cand_desc" >> "$WORKER_VERBOSE_LOG" 2>&1; touch "$NOTIFICATION_FILE"; kill -USR1 $$ 2>/dev/null ) &
+    TOM_PID=$!
+    echo "$TOM_PID" > "$WORKER_PID_FILE"
+    TOM_ACTIVE=true
+    TOM_TASK_LINE="$cand_line"
+    TOM_TASK_DESC="$cand_desc"
+
+    # Write Tom's status file (for dashboard)
+    local safe_desc="${cand_desc//$'\n'/ }"
+    cat > "$WORKER_STATUS_FILE" <<EOF
+STATE=running
+WORKER_PID=$$
+CLAUDE_PID=$TOM_PID
+TASK_LINE=$cand_line
+TASK_DESC=$safe_desc
+TASK_STARTED=$TOM_TASK_STARTED
+UPDATED=$(date +%s)
+EOF
+
+    house_log "${_C_BLUE}▶ TASK STARTED ─── [Tom] #${cand_line}: ${cand_desc}${_C_RST}"
+    house_log "   🐱 Tom pounced! (Claude PID $TOM_PID)"
+    return 0
+  done < <(grep -n '^\[ \] ' "$TASK_FILE" 2>/dev/null || true)
+
+  return 1
+}
+
+check_tom() {
+  [ "$TOM_ACTIVE" = true ] || return 0
+
+  if is_process_alive "$TOM_PID"; then
+    # Still running — update heartbeat for dashboard
+    local safe_desc="${TOM_TASK_DESC//$'\n'/ }"
+    cat > "$WORKER_STATUS_FILE" <<EOF
+STATE=running
+WORKER_PID=$$
+CLAUDE_PID=$TOM_PID
+TASK_LINE=$TOM_TASK_LINE
+TASK_DESC=$safe_desc
+TASK_STARTED=$TOM_TASK_STARTED
+UPDATED=$(date +%s)
+EOF
+    return 0
+  fi
+
+  # Tom finished
+  wait "$TOM_PID" 2>/dev/null
+  local exit_code=$?
+
+  lock_tasks
+  if [ "$exit_code" -eq 0 ]; then
+    house_log "${_C_GREEN}✓ TASK DONE ─── [Tom] #${TOM_TASK_LINE}: ${TOM_TASK_DESC}${_C_RST}"
+    sedi "${TOM_TASK_LINE}s/^\[!\] /[q] /" "$TASK_FILE"
+    PENDING_COMMIT=true
+    LAST_CHANGE_TIME=$(date +%s)
+  else
+    house_log "${_C_RED}✗ TASK FAILED ─── [Tom] #${TOM_TASK_LINE} (exit $exit_code): ${TOM_TASK_DESC}${_C_RST}"
+    sedi "${TOM_TASK_LINE}s/^\[!\] /[-] /" "$TASK_FILE"
+  fi
+  unlock_tasks
+
+  TOM_PID=""
+  TOM_ACTIVE=false
+  TOM_TASK_LINE=""
+  TOM_TASK_DESC=""
+  rm -f "$WORKER_PID_FILE"
+
+  cat > "$WORKER_STATUS_FILE" <<EOF
+STATE=idle
+WORKER_PID=$$
+UPDATED=$(date +%s)
+EOF
+}
+
+cleanup_tom() {
+  if [ -n "$TOM_PID" ] && is_process_alive "$TOM_PID"; then
+    kill_tree "$TOM_PID"
+    house_log "   🐱 Tom yanked off the keyboard"
+  fi
+  rm -f "$WORKER_PID_FILE" "$WORKER_STATUS_FILE"
+}
+
 # ─── Pre-flight checks ──────────────────────────────────────────────────────
 
 if ! command -v git &>/dev/null; then
@@ -207,16 +350,31 @@ CURRENT_ACTIVE_SECTION=""
 
 # Cleanup on exit
 cleanup_supervisor() {
+  cleanup_tom
   cleanup_all_parallel
-  rm -f "$HIBERNATE_FILE"
+  rm -f "$HIBERNATE_FILE" "$NOTIFICATION_FILE"
   rm -rf "$LOCK_DIR"
   house_log "👩🏽 Big Mamma has left the building. Y'all are on your OWN now."
 }
 trap cleanup_supervisor EXIT
 trap 'cleanup_supervisor; exit 0' INT TERM
 
+# ─── Event-based worker notification ────────────────────────────────────────
+# Workers touch .worker-done on completion. smart_sleep checks every 1s.
+# USR1 signal interrupts sleep for near-instant reaction (best-effort).
+
+trap 'true' USR1
+
+smart_sleep() {
+  local duration=$1
+  for ((_ss=0; _ss<duration; _ss++)); do
+    [ -f "$NOTIFICATION_FILE" ] && rm -f "$NOTIFICATION_FILE" && return 0
+    sleep 1
+  done
+}
+
 # Start fresh
-rm -f "$HIBERNATE_FILE"
+rm -f "$HIBERNATE_FILE" "$NOTIFICATION_FILE"
 rm -rf "$LOCK_DIR"
 # Prune stale worktrees from previous runs
 git worktree prune >> "$VERBOSE_LOG" 2>&1 || true
@@ -230,63 +388,28 @@ house_log "Auto mode: ${AUTO_MODE:-off}"
 house_log "CLAUDE.md: $([ -n "$CLAUDE_MD_CONTENT" ] && echo 'loaded ✓' || echo 'not found')"
 house_log "Mamma Instructions: $([ -n "$MAMMA_INSTRUCTIONS" ] && echo 'loaded ✓' || echo 'none')"
 house_log "Jerry slots: $MAX_PARALLEL"
-# Log Jerry specializations
-if [ -f "$JERRY_SPECS_FILE" ]; then
-  for ((_si=0; _si<MAX_PARALLEL; _si++)); do
-    _spec=$(read_jerry_spec "$_si")
-    [ "$_spec" != "fullstack" ] && house_log "   Jerry #$_si: $_spec"
-  done
-fi
 house_log "Poll interval: ${POLL_INTERVAL}s"
 house_log "Commit debounce: ${COMMIT_BATCH_WAIT}s"
 house_log "Roll call: $(count_done) done, $(count_qa_ready) qa-ready, $(count_in_progress) in-progress, $(count_pending) pending, $(count_failed) failed"
 house_log "\"Now let's get this house in ORDER.\""
 
 # ─── Startup recovery: reset orphaned tasks ──────────────────────────────────
-# Tom starts ~3s before the supervisor, so he may already have a live [!] task.
-# Don't blindly reset it — check if Tom is alive first.
-# Also reset stale [q] tasks from previous sessions — the work may have been
-# merged, but Spike should re-validate from scratch on a fresh start.
+# Big Mamma starts BEFORE Tom and Spike, so ALL [!] and [q] tasks are orphaned
+# from the previous session. Safe to reset everything — nobody's working yet.
 _update_task_counts
 STARTUP_STALE=$_COUNT_IP
 STARTUP_QA=$_COUNT_QA
 
-# Reset stale [q] tasks — previous session's Spike didn't finish validating
 if [ "$STARTUP_QA" -gt 0 ]; then
   house_log "👩🏽🧹 $STARTUP_QA task(s) stuck at [q] from last session. Resetting to pending."
   sedi 's/^\[q\] /[ ] /' "$TASK_FILE"
 fi
 
 if [ "$STARTUP_STALE" -gt 0 ]; then
-  _tom_alive=false
-  _tom_task_line=""
-  if is_claude_alive; then
-    _tom_alive=true
-  fi
-  if read_worker_status 2>/dev/null && [ "$WSTAT_STATE" = "running" ] && \
-     [ -n "$WSTAT_WORKER_PID" ] && is_process_alive "$WSTAT_WORKER_PID"; then
-    _tom_alive=true
-    _tom_task_line="$WSTAT_TASK_LINE"
-  fi
-
-  if [ "$_tom_alive" = true ] && [ -n "$_tom_task_line" ]; then
-    # Tom is already working — keep his task, reset any other stale [!] tasks
-    _stale_others=$(( STARTUP_STALE - 1 ))
-    if [ "$_stale_others" -gt 0 ]; then
-      house_log "👩🏽😤 Tom's on task #$_tom_task_line, but $_stale_others other [!] task(s) are orphaned. Resetting those."
-      awk -v tl="$_tom_task_line" 'NR==tl{print; next} /^\[!\] /{sub(/^\[!\] /,"[ ] ")} {print}' \
-        "$TASK_FILE" > "$TASK_FILE.tmp" && mv "$TASK_FILE.tmp" "$TASK_FILE"
-    else
-      house_log "👩🏽 Tom's already chasing task #$_tom_task_line. No orphans. Good boy."
-    fi
-  elif [ "$_tom_alive" = true ]; then
-    house_log "👩🏽 Tom's alive but task line unknown. Leaving [!] tasks alone to be safe."
-  else
-    house_log "👩🏽😤 $STARTUP_STALE task(s) stuck at [!] from last session! Nobody's working yet — resetting ALL."
-    house_log "   \"Lord have mercy, y'all left the STOVE on!\""
-    sedi 's/^\[!\] /[ ] /' "$TASK_FILE"
-    house_log "   👩🏽✓ Reset $STARTUP_STALE orphaned task(s) back to pending. Fresh start."
-  fi
+  house_log "👩🏽😤 $STARTUP_STALE task(s) stuck at [!] from last session! Nobody's working yet — resetting ALL."
+  house_log "   \"Lord have mercy, y'all left the STOVE on!\""
+  sedi 's/^\[!\] /[ ] /' "$TASK_FILE"
+  house_log "   👩🏽✓ Reset $STARTUP_STALE orphaned task(s) back to pending. Fresh start."
 fi
 LAST_DONE_COUNT=$(count_done)
 
@@ -345,20 +468,23 @@ while true; do
     fi
   fi
 
-  # ── Wake Tom if tasks exist ──
-  if [ "$PENDING" -gt 0 ] || [ "$IN_PROGRESS" -gt 0 ]; then
-    wake_worker
-  fi
+  # ── Check on Tom (did he finish?) ──
+  check_tom
 
   # ── Check on the Jerrys ──
   check_parallel_workers
 
-  # ── Deploy Jerrys for pending tasks (eager — no LLM bottleneck) ──
+  # ── Assign tasks to workers ──
   if [ "$PENDING" -gt 0 ]; then
+    # Assign Tom first (if idle)
+    if [ "$TOM_ACTIVE" != true ]; then
+      assign_next_to_tom
+    fi
+    # Fill Jerry slots with remaining tasks
     fill_jerry_slots
   fi
 
-  # ── Stale task detection (status-aware) ──
+  # ── Stale task detection ──
   if [ "$IN_PROGRESS" -gt 0 ]; then
     # Cap check: more [!] tasks than physically possible = guaranteed stale
     MAX_POSSIBLE=$((1 + MAX_PARALLEL))
@@ -369,29 +495,22 @@ while true; do
       _update_task_counts
       IN_PROGRESS=$_COUNT_IP
       PENDING=$_COUNT_PENDING
-      sleep "$POLL_INTERVAL"
+      smart_sleep "$POLL_INTERVAL"
       continue
     fi
 
     WORKER_ALIVE=false
-    CLAUDE_PROC_ALIVE=false
     TASK_AGE=0
 
-    # Primary: read Tom's status file
-    if read_worker_status; then
-      [ -n "$WSTAT_WORKER_PID" ] && is_process_alive "$WSTAT_WORKER_PID" && WORKER_ALIVE=true
-      [ -n "$WSTAT_CLAUDE_PID" ] && is_process_alive "$WSTAT_CLAUDE_PID" && CLAUDE_PROC_ALIVE=true
-      if [ -n "$WSTAT_TASK_STARTED" ] && [ "$WSTAT_TASK_STARTED" -gt 0 ] 2>/dev/null; then
-        TASK_AGE=$(( $(date +%s) - WSTAT_TASK_STARTED ))
+    # Check Tom (Big Mamma knows directly — no status file needed)
+    if [ "$TOM_ACTIVE" = true ] && is_process_alive "$TOM_PID"; then
+      WORKER_ALIVE=true
+      if [ -n "$TOM_TASK_STARTED" ] && [ "$TOM_TASK_STARTED" -gt 0 ] 2>/dev/null; then
+        TASK_AGE=$(( $(date +%s) - TOM_TASK_STARTED ))
       fi
     fi
 
-    # Fallback: check PID file directly
-    if [ "$CLAUDE_PROC_ALIVE" = false ] && is_claude_alive; then
-      CLAUDE_PROC_ALIVE=true
-    fi
-
-    # Count any active Jerry as alive too
+    # Check Jerrys
     for ((pi=0; pi<MAX_PARALLEL; pi++)); do
       if [ "${P_ACTIVE[$pi]}" = true ] && is_process_alive "${P_PIDS[$pi]}" 2>/dev/null; then
         WORKER_ALIVE=true
@@ -399,21 +518,20 @@ while true; do
       fi
     done
 
-    if [ "$WORKER_ALIVE" = true ] || [ "$CLAUDE_PROC_ALIVE" = true ]; then
+    if [ "$WORKER_ALIVE" = true ]; then
       GRACE_CYCLES=0
       ALIVE_TICKS=$((ALIVE_TICKS + 1))
 
       AGE_STR="${TASK_AGE}s"
       [ "$TASK_AGE" -gt 60 ] && AGE_STR="$((TASK_AGE / 60))m$((TASK_AGE % 60))s"
-      DESC_SHORT=$(short "${WSTAT_TASK_DESC:-unknown task}")
+      DESC_SHORT=$(short "${TOM_TASK_DESC:-unknown task}")
 
       # Log worker activity every ~60s + on first detection
       if [ "$ALIVE_TICKS" -eq 1 ] || [ $((ALIVE_TICKS % 4)) -eq 0 ]; then
         ALIVE_DETAIL=""
         active_p=$(count_active_parallel)
-        [ "$WORKER_ALIVE" = true ] && ALIVE_DETAIL="🐱tom"
-        [ "$CLAUDE_PROC_ALIVE" = true ] && ALIVE_DETAIL="${ALIVE_DETAIL:+$ALIVE_DETAIL+}claude"
-        [ "$active_p" -gt 0 ] && ALIVE_DETAIL="${ALIVE_DETAIL}+🐭${active_p}xjerry"
+        [ "$TOM_ACTIVE" = true ] && ALIVE_DETAIL="🐱tom"
+        [ "$active_p" -gt 0 ] && ALIVE_DETAIL="${ALIVE_DETAIL:+$ALIVE_DETAIL+}🐭${active_p}xjerry"
         house_log "👩🏽👀 Big Mamma's watching ($ALIVE_DETAIL, ${AGE_STR}): $DESC_SHORT"
       fi
 
@@ -421,34 +539,22 @@ while true; do
         house_log "👩🏽⏰ Tom's been at this for ${AGE_STR}! (over $((MAX_TASK_AGE / 60))m). He's alive... just SLOW."
       fi
 
-      sleep "$POLL_INTERVAL"
+      smart_sleep "$POLL_INTERVAL"
       continue
     fi
 
-    # Neither Tom nor Claude is alive
+    # No worker alive
     ALIVE_TICKS=0
-
-    if [ -f "$HIBERNATE_FILE" ]; then
-      house_log "👩🏽😤 Tom's HIBERNATING but $IN_PROGRESS task(s) stuck at [!]?! Oh HELL no."
-      recover_stale_tasks
-      wake_worker
-      GRACE_CYCLES=0
-      sleep "$POLL_INTERVAL"
-      continue
-    fi
-
-    # Dead worker — grace period before recovery
     GRACE_CYCLES=$((GRACE_CYCLES + 1))
     if [ "$GRACE_CYCLES" -eq 1 ]; then
-      house_log "👩🏽⚠ Hmm... I don't hear Tom OR Jerry. Grace period: ${GRACE_THRESHOLD} cycles (~$((GRACE_THRESHOLD * POLL_INTERVAL))s)..."
+      house_log "👩🏽⚠ Hmm... nobody's working but $IN_PROGRESS task(s) at [!]. Grace period..."
     fi
     if [ "$GRACE_CYCLES" -ge "$GRACE_THRESHOLD" ]; then
-      house_log "👩🏽😤 THOMAS! You been GONE for $((GRACE_CYCLES * POLL_INTERVAL))s! Recovering $IN_PROGRESS stuck task(s)..."
-      house_log "   \"I swear, that cat is gonna give me GRAY HAIR!\""
+      house_log "👩🏽😤 Workers gone for $((GRACE_CYCLES * POLL_INTERVAL))s! Recovering $IN_PROGRESS stuck task(s)..."
       recover_stale_tasks
       GRACE_CYCLES=0
     fi
-    sleep "$POLL_INTERVAL"
+    smart_sleep "$POLL_INTERVAL"
     continue
   else
     GRACE_CYCLES=0
@@ -461,7 +567,7 @@ while true; do
     if [ "$ELAPSED" -lt "$COMMIT_BATCH_WAIT" ]; then
       REMAINING=$((COMMIT_BATCH_WAIT - ELAPSED))
       house_log "👩🏽⏳ Hold your horses... ${REMAINING}s until commit (letting things settle)"
-      sleep "$POLL_INTERVAL"
+      smart_sleep "$POLL_INTERVAL"
       continue
     fi
 
@@ -522,7 +628,7 @@ Status: $CURRENT_DONE done, $QA_READY qa-ready, $PENDING pending, $FAILED failed
   fi
 
   # ── All tasks done? ──
-  if [ "$PENDING" -eq 0 ] && [ "$IN_PROGRESS" -eq 0 ] && ! any_parallel_active; then
+  if [ "$PENDING" -eq 0 ] && [ "$IN_PROGRESS" -eq 0 ] && ! any_parallel_active && [ "$TOM_ACTIVE" != true ]; then
     hibernate_worker
 
     # Wait for Spike to validate [q] tasks before declaring done
@@ -541,13 +647,13 @@ Status: $CURRENT_DONE done, $QA_READY qa-ready, $PENDING pending, $FAILED failed
         LAST_QA_COUNT=0
         ALL_DONE_LOGGED=false
       fi
-      sleep "$POLL_INTERVAL"
+      smart_sleep "$POLL_INTERVAL"
       continue
     fi
 
     # Try retrying failed tasks before declaring done
     if [ "$FAILED" -gt 0 ] && retry_failed_tasks; then
-      sleep "$POLL_INTERVAL"
+      smart_sleep "$POLL_INTERVAL"
       continue
     fi
 
@@ -590,5 +696,5 @@ Status: $CURRENT_DONE done, $QA_READY qa-ready, $PENDING pending, $FAILED failed
     rotate_log_if_needed "$VERBOSE_LOG"
   fi
 
-  sleep "$POLL_INTERVAL"
+  smart_sleep "$POLL_INTERVAL"
 done

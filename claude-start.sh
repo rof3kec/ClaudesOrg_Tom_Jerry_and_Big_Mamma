@@ -336,13 +336,13 @@ cleanup() {
   fi
 
   [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
-  [ -n "$WORKER_PID" ] && kill_tree "$WORKER_PID" && echo "  🐱 Tom dragged away from the keyboard (PID $WORKER_PID)"
   [ -n "$QA_PID" ] && kill_tree "$QA_PID" && echo "  🐶 Spike called off patrol (PID $QA_PID)"
   [ -n "$SDIKE_PID" ] && kill_tree "$SDIKE_PID" && echo "  🐕 Sdike sent home (PID $SDIKE_PID)"
   [ -n "$SUPERVISOR_PID" ] && kill_tree "$SUPERVISOR_PID" && echo "  👩🏽 Big Mamma hangs up her apron (PID $SUPERVISOR_PID)"
   rm -f "$LOCK_FILE"
   rm -f .claude-worker.pid .claude-supervisor.pid .claude-qa.pid .claude-qa-sdike.pid .worker-status .qa-status .qa-status-sdike .parallel-status-*
   rm -rf .tasks.lock .worktrees .qa-running.lock
+  git worktree prune 2>/dev/null || true
   rm -f .worker-hibernate .house-jerries
   wait 2>/dev/null
   echo ""
@@ -405,11 +405,19 @@ done
 # Ensure log files exist before tail -f
 touch claude-worker.log claude-qa.log claude-qa-sdike.log claude-supervisor.log 2>/dev/null
 
-# Start Tom (stdout -> /dev/null, stderr -> log so crashes are visible)
-bash "$SCRIPT_DIR/claude-worker.sh" "$TASK_FILE" $AUTO_MODE > /dev/null 2>> claude-worker.log &
-WORKER_PID=$!
-echo "🐱 Tom the Cat enters the house (PID $WORKER_PID)"
-echo "   \"Alright, where are those tasks...\""
+# Clean stale git locks from previous crashes (prevents git operations from hanging)
+rm -f .git/index.lock 2>/dev/null || true
+git worktree prune 2>/dev/null || true
+
+# Start Big Mamma FIRST — she's the boss, she decides when workers move
+bash "$SCRIPT_DIR/claude-supervisor.sh" "$BRANCH" "$TASK_FILE" "$MERGE_MAIN" "$AUTO_MODE" "$JERRIES" > /dev/null 2>> claude-supervisor.log &
+SUPERVISOR_PID=$!
+echo "$SUPERVISOR_PID" > .claude-supervisor.pid
+echo "👩🏽 Big Mamma enters the house FIRST (PID $SUPERVISOR_PID)"
+echo "   \"I'M in charge here. Nobody moves until I say so!\""
+
+# Tom is managed directly by Big Mamma — she spawns Claude for each task
+echo "🐱 Tom is on standby — Big Mamma assigns his tasks"
 
 # Start Spike
 bash "$SCRIPT_DIR/claude-qa.sh" "$TASK_FILE" > /dev/null 2>> claude-qa.log &
@@ -417,16 +425,6 @@ QA_PID=$!
 echo "$QA_PID" > .claude-qa.pid
 echo "🐶 Spike the Bulldog takes his post (PID $QA_PID)"
 echo "   *growl* \"I'm watching you, Tom.\""
-
-# Small delay so Tom grabs first task before Big Mamma checks
-sleep 3
-
-# Start Big Mamma
-bash "$SCRIPT_DIR/claude-supervisor.sh" "$BRANCH" "$TASK_FILE" "$MERGE_MAIN" "$AUTO_MODE" "$JERRIES" > /dev/null 2>> claude-supervisor.log &
-SUPERVISOR_PID=$!
-echo "$SUPERVISOR_PID" > .claude-supervisor.pid
-echo "👩🏽 Big Mamma enters the house (PID $SUPERVISOR_PID)"
-echo "   \"Now y'all better BEHAVE yourselves!\""
 
 echo ""
 echo "🏠 The House is OPEN! Watching logs..."
@@ -436,18 +434,8 @@ echo "════════════════════════�
 tail -f claude-worker.log claude-qa.log claude-qa-sdike.log claude-supervisor.log 2>/dev/null &
 TAIL_PID=$!
 
-# Wait for all to keep running — if Tom or Big Mamma dies, close the house
+# Wait for Big Mamma — if she dies, close the house (she manages Tom directly)
 while true; do
-  if ! kill -0 "$WORKER_PID" 2>/dev/null; then
-    echo ""
-    echo "🐱💀 Tom has left the building unexpectedly!"
-    echo "   Big Mamma: \"THOMAS?! Where did that cat GO?!\""
-    echo ""
-    echo "   ── Last lines from claude-worker.log ──"
-    tail -8 claude-worker.log 2>/dev/null || echo "   (no log available)"
-    echo "   ────────────────────────────────────────"
-    break
-  fi
   if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
     echo ""
     echo "👩🏽💀 Big Mamma has left the building unexpectedly!"
