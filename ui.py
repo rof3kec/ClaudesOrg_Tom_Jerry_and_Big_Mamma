@@ -113,7 +113,8 @@ def _run_stop_script(path, force=False, timeout=15):
         cmd.insert(2, "--force")
     try:
         r = subprocess.run(cmd, cwd=str(SCRIPT_DIR),
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout,
+                           encoding="utf-8", errors="replace")
         return r.returncode == 0
     except Exception:
         return False
@@ -135,6 +136,7 @@ def _nuke_claude_processes():
             ["wmic", "process", "where", "Name='node.exe'",
              "get", "CommandLine,ProcessId", "/FORMAT:CSV"],
             capture_output=True, text=True, timeout=15,
+            encoding="utf-8", errors="replace",
         )
         for line in r.stdout.splitlines():
             if "claude" in line.lower():
@@ -145,6 +147,7 @@ def _nuke_claude_processes():
                         subprocess.run(
                             ["taskkill", "/T", "/F", "/PID", pid_str],
                             capture_output=True, timeout=5,
+                            encoding="utf-8", errors="replace",
                         )
                         killed += 1
                     except Exception:
@@ -270,12 +273,14 @@ def get_agents(loc):
         jerry_state = _live_state(ps)
         spec = jerry_specs.get(str(i), "fullstack")
         spec_label = next((s["label"] for s in SPECIALIZATIONS if s["id"] == spec), "Fullstack")
+        branch = ps.get("BRANCH", "")
         agents.append({
             "id": f"jerry_{i}", "name": f"Jerry #{i}",
             "role": f"Parallel Worker · {spec_label}",
             "state": jerry_state,
             "task": ps.get("TASK_DESC", "") if jerry_state != "offline" else "",
             "spec": spec,
+            "branch": branch,
         })
 
     # Spike
@@ -481,6 +486,7 @@ def api_branch():
         r = subprocess.run(
             ["git", "branch", "--show-current"],
             cwd=path, capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",
         )
         branch = r.stdout.strip()
         return jsonify({"branch": branch, "protected": branch in ("main", "master")})
@@ -546,6 +552,7 @@ def api_start():
         r = subprocess.run(
             ["git", "remote", "get-url", "origin"],
             cwd=path, capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",
         )
         if r.returncode != 0:
             return jsonify({"error": "No 'origin' remote configured. Add one with: git remote add origin <url>"}), 400

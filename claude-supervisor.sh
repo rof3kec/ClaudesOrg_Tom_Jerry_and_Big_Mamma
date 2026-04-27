@@ -318,6 +318,16 @@ if ! git remote get-url origin &>/dev/null; then
   house_die "No 'origin' remote configured."
 fi
 
+# ─── Fix Git safe.directory for Jerry clones (Windows compatibility) ───────
+# On Windows filesystems without ownership (FAT32, exFAT, network drives),
+# git clone fails with "dubious ownership" error. Add exception for .git dir.
+REPO_GIT_DIR="$(pwd)/.git"
+if ! git config --get-all safe.directory | grep -qF "$REPO_GIT_DIR" 2>/dev/null; then
+  if git config --global --add safe.directory "$REPO_GIT_DIR" >> "$VERBOSE_LOG" 2>&1; then
+    house_log "👩🏽🔧 Added git safe.directory exception for Jerry clones (Windows fix)"
+  fi
+fi
+
 # ─── Read CLAUDE.md and Mamma Instructions ─────────────────────────────────
 
 CLAUDE_MD_CONTENT=""
