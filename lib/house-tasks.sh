@@ -130,6 +130,48 @@ recover_stale_tasks() {
   return 0
 }
 
+# ─── Per-Task Failure Tracking ──────────────────────────────────────────────
+# Tracks how many times each task has failed across all workers.
+# After TASK_FAIL_MAX failures, the task stays [-] instead of bouncing back to [ ].
+
+TASK_FAILURES_FILE=".task-failures"
+TASK_FAIL_MAX=3
+
+_task_hash() {
+  echo "$1" | cksum | cut -d' ' -f1
+}
+
+record_task_failure() {
+  local task_desc="$1"
+  local hash
+  hash=$(_task_hash "$task_desc")
+  local count=0
+  if [ -f "$TASK_FAILURES_FILE" ]; then
+    count=$(grep "^${hash} " "$TASK_FAILURES_FILE" 2>/dev/null | awk '{print $2}') || true
+    count="${count:-0}"
+  fi
+  count=$((count + 1))
+  if [ -f "$TASK_FAILURES_FILE" ]; then
+    grep -v "^${hash} " "$TASK_FAILURES_FILE" > "$TASK_FAILURES_FILE.tmp" 2>/dev/null || true
+    mv "$TASK_FAILURES_FILE.tmp" "$TASK_FAILURES_FILE"
+  fi
+  echo "$hash $count" >> "$TASK_FAILURES_FILE"
+  echo "$count"
+}
+
+get_task_failure_count() {
+  local task_desc="$1"
+  local hash
+  hash=$(_task_hash "$task_desc")
+  if [ -f "$TASK_FAILURES_FILE" ]; then
+    local count
+    count=$(grep "^${hash} " "$TASK_FAILURES_FILE" 2>/dev/null | awk '{print $2}') || true
+    echo "${count:-0}"
+  else
+    echo "0"
+  fi
+}
+
 # ─── Cleanup Completed Tasks ────────────────────────────────────────────────
 
 cleanup_done_tasks() {

@@ -260,6 +260,34 @@ html,body{height:100%;background:var(--bg-0);color:var(--text-1);font-family:var
 .btn-clear-logs{padding:5px 12px;border:1px solid var(--border);border-radius:20px;background:transparent;color:var(--text-2);font-size:12px;cursor:pointer;transition:all .15s;font-family:var(--font);white-space:nowrap}
 .btn-clear-logs:hover{background:rgba(248,81,73,.12);border-color:var(--red);color:var(--red)}
 
+/* ── Scene Window ─────────────────────────────────────────────────── */
+#scene-window{background:linear-gradient(to bottom,#2a1810 0%,#3d2a1f 40%,#8B6242 100%);border-bottom:1px solid var(--border);position:relative;overflow:hidden;flex-shrink:0;height:200px;transition:height .3s ease}
+#scene-window.collapsed{height:32px}
+.scene-header{padding:6px 24px;display:flex;justify-content:space-between;align-items:center;background:rgba(0,0,0,.3);border-bottom:1px solid rgba(255,255,255,.1);cursor:pointer;user-select:none}
+.scene-header:hover{background:rgba(0,0,0,.4)}
+.scene-header h3{font-size:13px;font-weight:600;color:var(--text-0);margin:0}
+.scene-toggle{font-size:18px;color:var(--text-2);transition:transform .3s ease}
+#scene-window.collapsed .scene-toggle{transform:rotate(180deg)}
+.scene-stage{position:relative;width:100%;height:168px;overflow:hidden}
+.scene-bg{position:absolute;inset:0}
+.scene-floor{position:absolute;bottom:0;left:0;right:0;height:60px;background:linear-gradient(to bottom,#6B4423 0%,#5A3818 100%);border-top:2px solid #4A2810}
+.scene-wall{position:absolute;top:0;left:0;right:0;height:108px;background:linear-gradient(135deg,#F5E6D3 0%,#E8D4B8 50%,#D4C4A8 100%)}
+.scene-baseboard{position:absolute;top:106px;left:0;right:0;height:4px;background:#8B6242;box-shadow:0 2px 4px rgba(0,0,0,.3)}
+.scene-window-frame{position:absolute;top:15px;right:40px;width:80px;height:70px;background:linear-gradient(to bottom,#87CEEB,#B0E0F6);border:4px solid #654321;border-radius:4px;box-shadow:inset 0 0 20px rgba(255,255,255,.4)}
+.scene-window-cross{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:100%;height:2px;background:#654321}
+.scene-window-cross:after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:2px;height:100px;background:#654321}
+.scene-char{position:absolute;bottom:60px;transition:left 2s ease-in-out,bottom .5s ease;z-index:10;filter:drop-shadow(2px 3px 3px rgba(0,0,0,.4))}
+.scene-char svg{width:70px;height:70px}
+.scene-char.walking{animation:scene-walk 4s ease-in-out infinite}
+.scene-char.running{animation:scene-run 2s linear infinite}
+.scene-char.scurrying{animation:scene-scurry 3s ease-in-out infinite}
+.scene-char.patrolling{animation:scene-patrol 5s ease-in-out infinite}
+@keyframes scene-walk{0%,100%{left:10%}50%{left:30%}}
+@keyframes scene-run{0%,100%{left:70%}50%{left:20%}}
+@keyframes scene-scurry{0%{left:5%}25%{left:25%}50%{left:15%}75%{left:35%}100%{left:5%}}
+@keyframes scene-patrol{0%,100%{left:60%}50%{left:80%}}
+.scene-char.flipped svg{transform:scaleX(-1)}
+
 /* ── Inline SVG icons ─────────────────────────────────────────────── */
 .icon-inline{display:inline-flex;align-items:center;vertical-align:middle;line-height:0;flex-shrink:0}
 .filter-char{display:inline-block;vertical-align:middle;margin-right:3px;line-height:0}
@@ -326,6 +354,25 @@ html,body{height:100%;background:var(--bg-0);color:var(--text-1);font-family:var
     </div>
 
     <div id="log-view">
+      <!-- ── Scene Window ──────────────────────────────────────────────── -->
+      <div id="scene-window">
+        <div class="scene-header" onclick="toggleScene()">
+          <h3>🎬 The House</h3>
+          <span class="scene-toggle">▼</span>
+        </div>
+        <div class="scene-stage">
+          <div class="scene-bg">
+            <div class="scene-wall"></div>
+            <div class="scene-window-frame">
+              <div class="scene-window-cross"></div>
+            </div>
+            <div class="scene-baseboard"></div>
+            <div class="scene-floor"></div>
+          </div>
+          <div id="scene-characters"></div>
+        </div>
+      </div>
+
       <div class="log-header">
         <h2 id="log-title">Logs</h2>
         <div style="display:flex;align-items:center;gap:8px">
@@ -683,6 +730,66 @@ function getCharacter(agentId, state) {
   return '<div class="agent-char ' + charClass + ' ' + st + '">' + svg + '</div>';
 }
 
+// ── Scene Window ──────────────────────────────────────────────────────────────
+
+function toggleScene() {
+  const scene = $('scene-window');
+  scene.classList.toggle('collapsed');
+}
+
+function renderScene(agents) {
+  if (!agents) return;
+  const container = $('scene-characters');
+  container.innerHTML = '';
+
+  agents.forEach(a => {
+    if (a.state === 'offline') return;
+
+    let animClass = '';
+    let leftPos = '50%';
+    let svg = '';
+
+    if (a.id === 'big_mamma') {
+      if (a.state === 'running') {
+        animClass = 'walking';
+      } else {
+        leftPos = '15%';
+      }
+      svg = charMamma();
+    } else if (a.id === 'tom') {
+      if (a.state === 'running') {
+        animClass = 'running';
+      } else if (a.state === 'hibernating') {
+        leftPos = '75%';
+      } else {
+        leftPos = '60%';
+      }
+      svg = charTom();
+    } else if (a.id.startsWith('jerry')) {
+      if (a.state === 'running') {
+        animClass = 'scurrying';
+      } else {
+        const jerryNum = parseInt(a.id.split('_')[1]) || 0;
+        leftPos = (5 + jerryNum * 8) + '%';
+      }
+      svg = charJerry();
+    } else if (a.id === 'spike') {
+      if (a.state === 'checking') {
+        animClass = 'patrolling';
+      } else {
+        leftPos = '85%';
+      }
+      svg = charSpike();
+    }
+
+    const charDiv = document.createElement('div');
+    charDiv.className = 'scene-char ' + animClass + ' char char-' + a.id.replace('_', '-') + ' st-' + a.state;
+    if (!animClass) charDiv.style.left = leftPos;
+    charDiv.innerHTML = svg;
+    container.appendChild(charDiv);
+  });
+}
+
 // ── Render: Agents ─────────────────────────────────────────────────────────────
 
 const AGENT_FILLERS = {
@@ -1021,6 +1128,7 @@ async function poll() {
 
       currentState = await api('GET', '/api/state?path=' + path);
       renderAgents(currentState.agents);
+      renderScene(currentState.agents);
       renderTasks(currentState.tasks);
       updateControls(currentState.running);
       updateTitle();
