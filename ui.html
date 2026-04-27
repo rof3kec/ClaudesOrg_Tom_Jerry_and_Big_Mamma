@@ -56,6 +56,7 @@ html,body{height:100%;background:var(--bg-0);color:var(--text-1);font-family:var
 .agent-info{flex:1;min-width:0;margin-left:4px}
 .agent-name{font-size:13px;font-weight:500;color:var(--text-0)}
 .agent-detail{font-size:11px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-branch{font-size:10px;color:var(--text-3);margin-top:2px;padding:2px 4px;background:var(--bg-2);border-radius:3px;display:inline-block;font-family:ui-monospace,'SF Mono',Monaco,Consolas,monospace}
 .agent-spec{display:flex;align-items:center;gap:4px;margin-top:2px}
 .agent-spec-select{padding:1px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg-0);color:var(--text-2);font-size:10px;cursor:pointer;outline:none;font-family:var(--font);max-width:120px;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0,0 L4,5 L8,0' fill='%23484f58'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 4px center;padding-right:14px}
 .agent-spec-select:hover{border-color:var(--text-3);color:var(--text-1)}
@@ -741,6 +742,12 @@ function renderAgents(agents) {
       detail = '<div class="agent-detail" style="color:var(--text-3)">' + esc(a.role) + '</div>';
     }
 
+    // Branch info for Jerry agents
+    let branchHtml = '';
+    if (a.id.startsWith('jerry_') && a.branch && a.state !== 'offline') {
+      branchHtml = '<div class="agent-branch" title="Working branch">🌿 ' + esc(a.branch) + '</div>';
+    }
+
     // Specialization dropdown for Jerry agents
     let specHtml = '';
     if (a.id.startsWith('jerry_') && jerrySpecializations.length > 0) {
@@ -755,7 +762,7 @@ function renderAgents(agents) {
 
     return '<div class="agent-item">'
       + getCharacter(a.id, a.state)
-      + '<div class="agent-info"><div class="agent-name">' + esc(a.name) + '</div>' + detail + specHtml + '</div>'
+      + '<div class="agent-info"><div class="agent-name">' + esc(a.name) + '</div>' + detail + branchHtml + specHtml + '</div>'
       + '<div class="agent-status status-' + a.state + '" title="' + a.state + '"></div>'
       + '</div>';
   }).join('');

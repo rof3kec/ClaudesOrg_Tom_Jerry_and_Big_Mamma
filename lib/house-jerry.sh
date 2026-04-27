@@ -171,14 +171,32 @@ spawn_parallel_worker() {
   # Clone repo locally — independent .git means zero lock contention with Tom
   # --depth 1: shallow clone (latest commit only) — fast for large repos (14K+ files)
   # --no-hardlinks: on Windows, hard links hang when Tom has files open
+  # file://: bypasses "dubious ownership" errors on Windows filesystems without ownership tracking
+  # --no-checkout: skip checkout to avoid Git LFS issues, we'll checkout manually
   rm -rf "$worktree_dir" 2>/dev/null
   mkdir -p .worktrees
-  if ! timeout 300 git clone --depth 1 --no-hardlinks --branch "$BRANCH" --single-branch --no-tags . "$worktree_dir" >> "$VERBOSE_LOG" 2>&1; then
+  local repo_path
+  repo_path=$(pwd)
+
+  # Clone without checkout first
+  if ! timeout 300 git clone --depth 1 --no-hardlinks --no-checkout --branch "$BRANCH" --single-branch --no-tags "file://${repo_path}" "$worktree_dir" >> "$VERBOSE_LOG" 2>&1; then
     house_log "🐭💥 Jerry #$slot couldn't dig his tunnel (clone failed). Reverting task."
     lock_tasks
     sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
     unlock_tasks
     rm -rf "$worktree_dir" 2>/dev/null
+    rm -f "$status_file"  # Clean up status file (dashboard shows Jerry offline)
+    return
+  fi
+
+  # Now checkout files (skip LFS to avoid checkout failures on large binaries)
+  if ! (cd "$worktree_dir" && GIT_LFS_SKIP_SMUDGE=1 git checkout "$BRANCH") >> "$VERBOSE_LOG" 2>&1; then
+    house_log "🐭💥 Jerry #$slot couldn't dig his tunnel (clone failed). Reverting task."
+    lock_tasks
+    sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
+    unlock_tasks
+    rm -rf "$worktree_dir" 2>/dev/null
+    rm -f "$status_file"  # Clean up status file (dashboard shows Jerry offline)
     return
   fi
 
@@ -189,10 +207,12 @@ spawn_parallel_worker() {
     sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
     unlock_tasks
     rm -rf "$worktree_dir" 2>/dev/null
+    rm -f "$status_file"  # Clean up status file (dashboard shows Jerry offline)
     return
   fi
 
   # Write Jerry's status (flatten desc for KEY=VALUE format)
+  # ONLY written after successful clone + branch creation
   local safe_desc="${task_desc//$'\n'/ }"
   cat > "$status_file" <<EOF
 STATE=running
