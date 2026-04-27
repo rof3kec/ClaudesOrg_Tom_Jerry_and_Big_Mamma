@@ -148,8 +148,6 @@ spawn_parallel_worker() {
   local slot="$1"
   local task_line="$2"
   local task_desc="$3"
-  local branch_name="parallel-${slot}-$(date +%s)"
-  local worktree_dir=".worktrees/jerry-$slot"
   local status_file=".parallel-status-$slot"
   local log_file="claude-parallel-$slot.log"
 
@@ -168,59 +166,13 @@ spawn_parallel_worker() {
   sedi "${task_line}s/^\[ \] /[!] /" "$TASK_FILE"
   unlock_tasks
 
-  # Clone repo locally — independent .git means zero lock contention with Tom
-  # --depth 1: shallow clone (latest commit only) — fast for large repos (14K+ files)
-  # --no-hardlinks: on Windows, hard links hang when Tom has files open
-  # file://: bypasses "dubious ownership" errors on Windows filesystems without ownership tracking
-  # --no-checkout: skip checkout to avoid Git LFS issues, we'll checkout manually
-  rm -rf "$worktree_dir" 2>/dev/null
-  mkdir -p .worktrees
-  local repo_path
-  repo_path=$(pwd)
-
-  # Clone without checkout first
-  if ! timeout 300 git clone --depth 1 --no-hardlinks --no-checkout --branch "$BRANCH" --single-branch --no-tags "file://${repo_path}" "$worktree_dir" >> "$VERBOSE_LOG" 2>&1; then
-    house_log "🐭💥 Jerry #$slot couldn't dig his tunnel (clone failed). Reverting task."
-    lock_tasks
-    sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
-    unlock_tasks
-    rm -rf "$worktree_dir" 2>/dev/null
-    rm -f "$status_file"  # Clean up status file (dashboard shows Jerry offline)
-    return
-  fi
-
-  # Now checkout files (skip LFS to avoid checkout failures on large binaries)
-  if ! (cd "$worktree_dir" && GIT_LFS_SKIP_SMUDGE=1 git checkout "$BRANCH") >> "$VERBOSE_LOG" 2>&1; then
-    house_log "🐭💥 Jerry #$slot couldn't dig his tunnel (clone failed). Reverting task."
-    lock_tasks
-    sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
-    unlock_tasks
-    rm -rf "$worktree_dir" 2>/dev/null
-    rm -f "$status_file"  # Clean up status file (dashboard shows Jerry offline)
-    return
-  fi
-
-  # Create task branch in the clone
-  if ! (cd "$worktree_dir" && git checkout -b "$branch_name") >> "$VERBOSE_LOG" 2>&1; then
-    house_log "🐭💥 Jerry #$slot couldn't create task branch. Reverting task."
-    lock_tasks
-    sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
-    unlock_tasks
-    rm -rf "$worktree_dir" 2>/dev/null
-    rm -f "$status_file"  # Clean up status file (dashboard shows Jerry offline)
-    return
-  fi
-
-  # Write Jerry's status (flatten desc for KEY=VALUE format)
-  # ONLY written after successful clone + branch creation
+  # Write Jerry's status
   local safe_desc="${task_desc//$'\n'/ }"
   cat > "$status_file" <<EOF
 STATE=running
 SLOT=$slot
 TASK_LINE=$task_line
 TASK_DESC=$safe_desc
-BRANCH=$branch_name
-WORKTREE=$worktree_dir
 STARTED=$(date +%s)
 UPDATED=$(date +%s)
 EOF
@@ -237,19 +189,17 @@ EOF
 Project context: $MAMMA_INSTRUCTIONS"
   fi
 
-  # Spawn Claude in Jerry's hideout (clone) — notify Big Mamma on completion
-  (cd "$worktree_dir" && $CLAUDE_SPAWN "$task_desc
+  # Spawn Claude in same directory as Tom — Jerry just edits files, Big Mamma handles git
+  ($CLAUDE_SPAWN "$task_desc
 ${JERRY_CONTEXT}
-(IMPORTANT: You are running in an isolated git worktree. Edit files only — do NOT run build, test, or install commands like pnpm install, tsc, etc. A QA worker will verify your changes after merge.)" >> "../../$log_file" 2>&1; touch "../../$NOTIFICATION_FILE"; kill -USR1 $$ 2>/dev/null) &
+(IMPORTANT: Edit files only — do NOT run build, test, or install commands. Do NOT use git commands. Big Mamma will handle commits and merges.)" >> "$log_file" 2>&1; touch "$NOTIFICATION_FILE"; kill -USR1 $$ 2>/dev/null) &
 
   P_PIDS[$slot]=$!
   P_TASK_LINES[$slot]="$task_line"
   P_TASK_DESCS[$slot]="$task_desc"
-  P_WORKTREES[$slot]="$worktree_dir"
-  P_BRANCHES[$slot]="$branch_name"
   P_ACTIVE[$slot]=true
 
-  house_log "   🐭 Jerry #$slot scurrying away (PID ${P_PIDS[$slot]}) in $worktree_dir"
+  house_log "   🐭 Jerry #$slot scurrying away (PID ${P_PIDS[$slot]})"
 }
 
 # ─── Check Jerry Workers ────────────────────────────────────────────────────
@@ -284,7 +234,14 @@ check_parallel_workers() {
 
     if [ "$p_exit" -eq 0 ]; then
       house_log "${_C_GREEN}✓ TASK DONE ─── [Jerry #${i}] #${P_TASK_LINES[$i]}: ${P_TASK_DESCS[$i]}${_C_RST}"
-      merge_parallel_worker "$i"
+      # Mark task as ready for QA (Spike will promote to [x])
+      lock_tasks
+      local tl="${P_TASK_LINES[$i]}"
+      sedi "${tl}s/^\[!\] /[q] /" "$TASK_FILE"
+      unlock_tasks
+      PENDING_COMMIT=true
+      LAST_CHANGE_TIME=$(date +%s)
+      cleanup_parallel_slot "$i"
     else
       house_log "${_C_RED}✗ TASK FAILED ─── [Jerry #${i}] #${P_TASK_LINES[$i]} (exit $p_exit): ${P_TASK_DESCS[$i]}${_C_RST}"
       lock_tasks
@@ -296,86 +253,21 @@ check_parallel_workers() {
   done
 }
 
-# ─── Merge Jerry's Work ─────────────────────────────────────────────────────
-
-merge_parallel_worker() {
-  local slot="$1"
-  local branch="${P_BRANCHES[$slot]}"
-  local task_line="${P_TASK_LINES[$slot]}"
-
-  house_log "🐭🔀 Bringing Jerry #$slot's work home (merging branch $branch)..."
-
-  # Commit any uncommitted work in Jerry's clone
-  local clone_dir="${P_WORKTREES[$slot]}"
-  (cd "$clone_dir" && git add -A && git commit -m "auto: Jerry #$slot work" 2>/dev/null) >> "$VERBOSE_LOG" 2>&1 || true
-
-  # Fetch Jerry's branch from the clone into the main repo
-  if ! git fetch "$clone_dir" "$branch:$branch" >> "$VERBOSE_LOG" 2>&1; then
-    house_log "🐭⚠ Jerry #$slot: couldn't fetch work from clone. Re-queuing task."
-    lock_tasks
-    sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
-    unlock_tasks
-    cleanup_parallel_slot "$slot"
-    return
-  fi
-
-  # Commit any uncommitted changes from Tom first
-  if has_changes; then
-    house_log "   Committing Tom's work-in-progress before merge..."
-    git add -A 2>/dev/null
-    git commit -m "auto: work in progress (pre-parallel-merge)" >> "$VERBOSE_LOG" 2>&1 || true
-  fi
-
-  if git merge "$branch" --no-edit >> "$VERBOSE_LOG" 2>&1; then
-    house_log "🐭✓ Jerry #$slot's work merged clean! That mouse is GOOD."
-
-    # Mark task as ready for QA (Spike will promote to [x])
-    lock_tasks
-    sedi "${task_line}s/^\[!\] /[q] /" "$TASK_FILE"
-    unlock_tasks
-
-    PENDING_COMMIT=true
-    LAST_CHANGE_TIME=$(date +%s)
-  else
-    house_log "🐭⚠ Jerry #$slot's work COLLIDED with Tom's! Merge conflict!"
-    house_log "   \"Same old story...\" Re-queuing for Tom to handle sequentially."
-    git merge --abort >> "$VERBOSE_LOG" 2>&1 || true
-
-    lock_tasks
-    sedi "${task_line}s/^\[!\] /[ ] /" "$TASK_FILE"
-    unlock_tasks
-  fi
-
-  cleanup_parallel_slot "$slot"
-}
-
 # ─── Cleanup Slot ────────────────────────────────────────────────────────────
 
 cleanup_parallel_slot() {
   local slot="$1"
-  local worktree="${P_WORKTREES[$slot]}"
-  local branch="${P_BRANCHES[$slot]}"
   local status_file=".parallel-status-$slot"
 
-  # Remove Jerry's cloned workspace
-  if [ -n "$worktree" ]; then
-    rm -rf "$worktree" 2>/dev/null || true
-  fi
-  # Delete task branch from main repo
-  if [ -n "$branch" ]; then
-    git branch -D "$branch" >> "$VERBOSE_LOG" 2>&1 || true
-  fi
   rm -f "$status_file"
 
   P_PIDS[$slot]=""
-  P_WORKTREES[$slot]=""
-  P_BRANCHES[$slot]=""
   P_TASK_LINES[$slot]=""
   P_TASK_DESCS[$slot]=""
   P_ACTIVE[$slot]=false
   PARALLEL_LAST_ANALYSIS=0
 
-  house_log "   🐭 Jerry #$slot's hideout demolished. Clean slate."
+  house_log "   🐭 Jerry #$slot finished. Clean slate."
 }
 
 # ─── Cleanup All ─────────────────────────────────────────────────────────────

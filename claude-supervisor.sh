@@ -66,15 +66,11 @@ VERBOSE_LOG="claude-supervisor-verbose.log"
 # ─── Jerry (parallel workers) — initialize arrays before sourcing ──────────
 
 P_PIDS=()
-P_WORKTREES=()
-P_BRANCHES=()
 P_TASK_LINES=()
 P_TASK_DESCS=()
 P_ACTIVE=()
 for ((_ji=0; _ji<MAX_PARALLEL; _ji++)); do
   P_PIDS+=("")
-  P_WORKTREES+=("")
-  P_BRANCHES+=("")
   P_TASK_LINES+=("")
   P_TASK_DESCS+=("")
   P_ACTIVE+=(false)
