@@ -44,7 +44,7 @@ any_parallel_active() {
 # ─── Fill Jerry Slots ──────────────────────────────────────────────────────
 
 fill_jerry_slots() {
-  # Eagerly fill free Jerry slots with pending tasks — instant, no LLM analysis.
+  # 🧠 SMART ROUTING: Fill free Jerry slots with conflict-aware task selection
   local free_slots=0
   for ((i=0; i<MAX_PARALLEL; i++)); do
     [ "${P_ACTIVE[$i]}" = false ] && free_slots=$((free_slots + 1))
@@ -68,10 +68,9 @@ fill_jerry_slots() {
     return 1
   fi
 
-  house_log "👩🏽🐭 Pending task(s) in '$ACTIVE_SECTION_NAME', $free_slots Jerry slot(s) free — filling them up!"
+  house_log "👩🏽🐭 Pending task(s) in '$ACTIVE_SECTION_NAME', $free_slots Jerry slot(s) free — smart routing engaged!"
 
   # Collect candidate tasks (with continuation lines)
-  # No skip_first needed — Big Mamma assigns Tom's tasks separately before this runs
   local -a CAND_LINES=()
   local -a CAND_DESCS=()
   while IFS= read -r candidate; do
@@ -117,27 +116,69 @@ ${_ccont}"
     return 1
   fi
 
+  # 🧠 CONFLICT-AWARE ASSIGNMENT: Only assign tasks that don't conflict with already-running Jerrys
+  local -a assigned_lines=()
   local spawned=0
-  local ti=0
 
-  # Fill free slots with pending tasks (first-come, first-served)
   for ((si=0; si<MAX_PARALLEL; si++)); do
     [ "${P_ACTIVE[$si]}" = true ] && continue
-    [ "$ti" -ge "${#CAND_LINES[@]}" ] && break
+    [ "$spawned" -ge "$free_slots" ] && break
 
-    spawn_parallel_worker "$si" "${CAND_LINES[$ti]}" "${CAND_DESCS[$ti]}"
-    if [ "${P_ACTIVE[$si]}" = true ]; then
-      spawned=$((spawned + 1))
-    else
-      house_log "🐭⚠ Jerry #$si failed to launch for line ${CAND_LINES[$ti]} — slot still free, trying next task"
-    fi
-    ti=$((ti + 1))
+    # Find next task that doesn't conflict with already-assigned tasks
+    local assigned=false
+    for ((ti=0; ti<${#CAND_LINES[@]}; ti++)); do
+      local cand_line="${CAND_LINES[$ti]}"
+      local cand_desc="${CAND_DESCS[$ti]}"
+
+      # Skip if already assigned this loop
+      local already_assigned=false
+      for assigned_line in "${assigned_lines[@]}"; do
+        [ "$assigned_line" = "$cand_line" ] && already_assigned=true && break
+      done
+      [ "$already_assigned" = true ] && continue
+
+      # Check conflict with other running Jerrys
+      local has_conflict=false
+      for ((oi=0; oi<MAX_PARALLEL; oi++)); do
+        [ "$oi" = "$si" ] && continue
+        [ "${P_ACTIVE[$oi]}" = true ] || continue
+
+        local other_line="${P_TASK_LINES[$oi]}"
+        if ! can_parallelize_with "$cand_line" "$other_line" 2>/dev/null; then
+          has_conflict=true
+          break
+        fi
+      done
+
+      # Also check conflict with tasks we're about to assign in this batch
+      for assigned_line in "${assigned_lines[@]}"; do
+        if ! can_parallelize_with "$cand_line" "$assigned_line" 2>/dev/null; then
+          has_conflict=true
+          break
+        fi
+      done
+
+      if [ "$has_conflict" = false ]; then
+        # Found a safe task — assign it
+        spawn_parallel_worker "$si" "$cand_line" "$cand_desc"
+        if [ "${P_ACTIVE[$si]}" = true ]; then
+          assigned_lines+=("$cand_line")
+          spawned=$((spawned + 1))
+          assigned=true
+        fi
+        break
+      fi
+    done
+
+    [ "$assigned" = false ] && house_log "   🐭⚠ Jerry #$si: no conflict-free tasks available"
   done
 
   PARALLEL_LAST_ANALYSIS=$now_ts
 
   if [ "$spawned" -gt 0 ]; then
-    house_log "👩🏽🐭 Deployed $spawned Jerry(s)! \"Y'all better WORK, not just STAND there!\""
+    house_log "👩🏽🐭 Deployed $spawned Jerry(s) with zero-conflict routing! \"Smart work beats hard work!\""
+  elif [ "$free_slots" -gt 0 ] && [ ${#CAND_LINES[@]} -gt 0 ]; then
+    house_log "   🐭 All remaining tasks conflict with running Jerrys — Tom will handle them sequentially"
   fi
   return 0
 }
@@ -209,10 +250,9 @@ check_parallel_workers() {
     [ "${P_ACTIVE[$i]}" = true ] || continue
 
     if is_process_alive "${P_PIDS[$i]}"; then
-      # Still running — periodic status
+      # Still running — periodic status + hard timeout check
       local status_file=".parallel-status-$i"
       if [ -f "$status_file" ]; then
-        # Heartbeat
         sedi "s/^UPDATED=.*/UPDATED=$(date +%s)/" "$status_file" 2>/dev/null
         local p_started
         p_started=$(grep '^STARTED=' "$status_file" 2>/dev/null | cut -d= -f2)
@@ -220,6 +260,23 @@ check_parallel_workers() {
           local p_age=$(( $(date +%s) - p_started ))
           local p_age_str="${p_age}s"
           [ "$p_age" -gt 60 ] && p_age_str="$((p_age / 60))m$((p_age % 60))s"
+
+          # Hard timeout: kill Jerry if stuck too long
+          if [ "$p_age" -ge "$TASK_HARD_TIMEOUT" ]; then
+            house_log "👩🏽🔨 Jerry #$i stuck for $((p_age / 60))m (limit: $((TASK_HARD_TIMEOUT / 60))m). PULLING THE PLUG!"
+            kill_tree "${P_PIDS[$i]}"
+            sleep 2
+            record_task_failure "${P_TASK_DESCS[$i]}" > /dev/null
+            lock_tasks
+            local tl="${P_TASK_LINES[$i]}"
+            sedi "${tl}s/^\[!\] /[-] /" "$TASK_FILE"
+            unlock_tasks
+            house_log "   👩🏽 Task #${tl} marked FAILED. \"$((TASK_HARD_TIMEOUT / 60)) minutes is $((TASK_HARD_TIMEOUT / 60)) minutes, Jerry!\""
+            LAST_FAILURE_TIME=$(date +%s)
+            cleanup_parallel_slot "$i"
+            continue
+          fi
+
           if [ $((ALIVE_TICKS % 4)) -eq 0 ] && [ "$ALIVE_TICKS" -gt 0 ]; then
             house_log "🐭 Jerry #$i still scurrying (${p_age_str}): $(short "${P_TASK_DESCS[$i]}")"
           fi
@@ -244,10 +301,19 @@ check_parallel_workers() {
       cleanup_parallel_slot "$i"
     else
       house_log "${_C_RED}✗ TASK FAILED ─── [Jerry #${i}] #${P_TASK_LINES[$i]} (exit $p_exit): ${P_TASK_DESCS[$i]}${_C_RST}"
+      local fail_count
+      fail_count=$(record_task_failure "${P_TASK_DESCS[$i]}")
       lock_tasks
       local tl="${P_TASK_LINES[$i]}"
-      sedi "${tl}s/^\[!\] /[ ] /" "$TASK_FILE"
+      if [ "$fail_count" -ge "$TASK_FAIL_MAX" ]; then
+        sedi "${tl}s/^\[!\] /[-] /" "$TASK_FILE"
+        house_log "   👩🏽✗ Task failed $fail_count times across workers. Marking PERMANENTLY failed."
+      else
+        sedi "${tl}s/^\[!\] /[ ] /" "$TASK_FILE"
+        house_log "   🐭 Re-queued (failure $fail_count/$TASK_FAIL_MAX)"
+      fi
       unlock_tasks
+      LAST_FAILURE_TIME=$(date +%s)
       cleanup_parallel_slot "$i"
     fi
   done

@@ -36,6 +36,7 @@ LOG_PREFIX="[BIG MAMMA]"
 source "$SCRIPT_DIR/lib/house-common.sh"
 source "$SCRIPT_DIR/lib/house-tasks.sh"
 source "$SCRIPT_DIR/lib/house-git.sh"
+source "$SCRIPT_DIR/lib/house-dispatch.sh"
 
 # ─── Supervisor-specific config ─────────────────────────────────────────────
 
@@ -47,13 +48,18 @@ GRACE_CYCLES=0             # cycles with no live worker while [!] tasks exist
 GRACE_THRESHOLD=16         # 16 x 15s = 4min grace before declaring stale
 ALIVE_TICKS=0              # activity logging cadence (reset when worker dies)
 MAX_TASK_AGE=600           # 10 min — warn if task exceeds this
+TASK_HARD_TIMEOUT=2400     # 40 min — kill worker and reset task if exceeded
 PUSH_PENDING=false
+PUSH_RETRIES=0
+PUSH_RETRY_MAX=5           # stop retrying push after this many consecutive failures
 MERGED_TO_MAIN=false
 ALL_DONE_LOGGED=false
 IDLE_SHUTDOWN_AFTER=1800     # 30 min idle with no tasks = graceful shutdown
 IDLE_SHUTDOWN_START=0
 RETRY_MAX=1
 RETRIED_TASKS=""
+LAST_FAILURE_TIME=0
+RETRY_BACKOFF=60           # wait 60s after last failure before retrying
 NOTIFICATION_FILE=".worker-done"
 
 # Spike (QA) integration
@@ -159,6 +165,16 @@ assign_next_to_tom() {
     return 1
   fi
 
+  # 🧠 SMART ROUTING: Tom gets heavy/conflict-prone tasks first, then light tasks
+  # Priority order:
+  # 1. Heavy tasks (longest duration, most complex)
+  # 2. Tasks in conflict clusters (can't parallelize anyway)
+  # 3. Any remaining task (FIFO)
+
+  local -a heavy_tasks=()
+  local -a conflict_tasks=()
+  local -a light_tasks=()
+
   while IFS= read -r candidate; do
     local cand_line
     cand_line=$(echo "$candidate" | cut -d: -f1)
@@ -186,6 +202,32 @@ ${_ccont}"
       continue
     fi
 
+    # Categorize by dispatch analysis
+    local complexity=$(get_task_complexity "$cand_line")
+    local cluster=$(get_task_conflict_cluster "$cand_line")
+
+    if [ "$complexity" = "heavy" ]; then
+      heavy_tasks+=("$cand_line|$cand_desc")
+    elif [[ "$cluster" == cluster-* ]]; then
+      # Part of a conflict cluster (multiple tasks share files)
+      conflict_tasks+=("$cand_line|$cand_desc")
+    else
+      light_tasks+=("$cand_line|$cand_desc")
+    fi
+  done < <(grep -n '^\[ \] ' "$TASK_FILE" 2>/dev/null || true)
+
+  # Try categories in priority order
+  local -a candidates=("${heavy_tasks[@]}" "${conflict_tasks[@]}" "${light_tasks[@]}")
+
+  if [ ${#candidates[@]} -eq 0 ]; then
+    return 1
+  fi
+
+  # Assign the first available task from priority list
+  for task in "${candidates[@]}"; do
+    local cand_line="${task%%|*}"
+    local cand_desc="${task#*|}"
+
     # Claim the task
     lock_tasks
     local current
@@ -211,6 +253,7 @@ ${_ccont}"
 
     # Write Tom's status file (for dashboard)
     local safe_desc="${cand_desc//$'\n'/ }"
+    local route_reason="[smart: $(get_task_complexity "$cand_line")]"
     cat > "$WORKER_STATUS_FILE" <<EOF
 STATE=running
 WORKER_PID=$$
@@ -221,10 +264,10 @@ TASK_STARTED=$TOM_TASK_STARTED
 UPDATED=$(date +%s)
 EOF
 
-    house_log "${_C_BLUE}▶ TASK STARTED ─── [Tom] #${cand_line}: ${cand_desc}${_C_RST}"
+    house_log "${_C_BLUE}▶ TASK STARTED ─── [Tom] #${cand_line} $route_reason: ${cand_desc}${_C_RST}"
     house_log "   🐱 Tom pounced! (Claude PID $TOM_PID)"
     return 0
-  done < <(grep -n '^\[ \] ' "$TASK_FILE" 2>/dev/null || true)
+  done
 
   return 1
 }
@@ -233,6 +276,35 @@ check_tom() {
   [ "$TOM_ACTIVE" = true ] || return 0
 
   if is_process_alive "$TOM_PID"; then
+    # Hard timeout: kill if stuck too long
+    if [ -n "$TOM_TASK_STARTED" ] && [ "$TOM_TASK_STARTED" -gt 0 ] 2>/dev/null; then
+      local tom_age=$(( $(date +%s) - TOM_TASK_STARTED ))
+      if [ "$tom_age" -ge "$TASK_HARD_TIMEOUT" ]; then
+        local age_min=$((tom_age / 60))
+        house_log "👩🏽🔨 ENOUGH! Tom's been stuck for ${age_min}m (limit: $((TASK_HARD_TIMEOUT / 60))m). PULLING THE PLUG!"
+        kill_tree "$TOM_PID"
+        sleep 2
+        record_task_failure "$TOM_TASK_DESC" > /dev/null
+        lock_tasks
+        sedi "${TOM_TASK_LINE}s/^\[!\] /[-] /" "$TASK_FILE"
+        unlock_tasks
+        house_log "   👩🏽 Task #${TOM_TASK_LINE} marked FAILED. \"I gave you $((TASK_HARD_TIMEOUT / 60)) minutes, Tom. $((TASK_HARD_TIMEOUT / 60)) MINUTES!\""
+        LAST_FAILURE_TIME=$(date +%s)
+        TOM_PID=""
+        TOM_ACTIVE=false
+        TOM_TASK_LINE=""
+        TOM_TASK_DESC=""
+        TOM_TASK_STARTED=""
+        rm -f "$WORKER_PID_FILE"
+        cat > "$WORKER_STATUS_FILE" <<EOF
+STATE=idle
+WORKER_PID=$$
+UPDATED=$(date +%s)
+EOF
+        return 0
+      fi
+    fi
+
     # Still running — update heartbeat for dashboard
     local safe_desc="${TOM_TASK_DESC//$'\n'/ }"
     cat > "$WORKER_STATUS_FILE" <<EOF
@@ -259,7 +331,11 @@ EOF
     LAST_CHANGE_TIME=$(date +%s)
   else
     house_log "${_C_RED}✗ TASK FAILED ─── [Tom] #${TOM_TASK_LINE} (exit $exit_code): ${TOM_TASK_DESC}${_C_RST}"
+    local fail_count
+    fail_count=$(record_task_failure "$TOM_TASK_DESC")
     sedi "${TOM_TASK_LINE}s/^\[!\] /[-] /" "$TASK_FILE"
+    house_log "   🐱 Failure $fail_count/$TASK_FAIL_MAX for this task"
+    LAST_FAILURE_TIME=$(date +%s)
   fi
   unlock_tasks
 
@@ -358,7 +434,7 @@ CURRENT_ACTIVE_SECTION=""
 cleanup_supervisor() {
   cleanup_tom
   cleanup_all_parallel
-  rm -f "$HIBERNATE_FILE" "$NOTIFICATION_FILE"
+  rm -f "$HIBERNATE_FILE" "$NOTIFICATION_FILE" "$TASK_FAILURES_FILE"
   rm -rf "$LOCK_DIR"
   house_log "👩🏽 Big Mamma has left the building. Y'all are on your OWN now."
 }
@@ -380,7 +456,7 @@ smart_sleep() {
 }
 
 # Start fresh
-rm -f "$HIBERNATE_FILE" "$NOTIFICATION_FILE"
+rm -f "$HIBERNATE_FILE" "$NOTIFICATION_FILE" "$TASK_FAILURES_FILE"
 rm -rf "$LOCK_DIR"
 # Prune stale worktrees from previous runs
 git worktree prune >> "$VERBOSE_LOG" 2>&1 || true
@@ -443,6 +519,13 @@ while true; do
       if [ "$ACTIVE_SECTION_NAME" != "(all tasks)" ]; then
         house_log "👩🏽📋 Now working on: $ACTIVE_SECTION_NAME"
       fi
+      # Clear dispatch cache on section change
+      clear_dispatch_cache
+    fi
+
+    # 🧠 Run pre-flight analysis when section starts (smart dispatch brain)
+    if [ "$PENDING" -gt 0 ] && [ "$DISPATCH_ANALYZED_SECTION" != "$ACTIVE_SECTION_NAME" ]; then
+      analyze_task_batch "$ACTIVE_SECTION_NAME" || true
     fi
   fi
 
@@ -464,13 +547,29 @@ while true; do
     LAST_DONE_COUNT=$CURRENT_DONE
     LAST_CHANGE_TIME=$NOW
     PENDING_COMMIT=true
+    # Reset push retry counter — fresh work deserves a fresh attempt
+    if [ "$PUSH_RETRIES" -gt "$PUSH_RETRY_MAX" ]; then
+      house_log "👩🏽🔁 New work done — I'll try pushing again."
+    fi
+    PUSH_RETRIES=0
   fi
 
   # ── Retry pending pushes ──
   if [ "$PUSH_PENDING" = true ] && [ "$IN_PROGRESS" -eq 0 ]; then
-    house_log "👩🏽🔁 Let me try that door again..."
-    if push_changes; then
-      PUSH_PENDING=false
+    if [ "$PUSH_RETRIES" -ge "$PUSH_RETRY_MAX" ]; then
+      if [ "$PUSH_RETRIES" -eq "$PUSH_RETRY_MAX" ]; then
+        house_log "👩🏽✗ Push failed $PUSH_RETRY_MAX times in a row. Giving up until new work completes."
+        house_log "   \"I ain't banging on a locked door all day!\""
+        PUSH_RETRIES=$((PUSH_RETRIES + 1))
+      fi
+    else
+      house_log "👩🏽🔁 Let me try that door again... (attempt $((PUSH_RETRIES + 1))/$PUSH_RETRY_MAX)"
+      if push_changes; then
+        PUSH_PENDING=false
+        PUSH_RETRIES=0
+      else
+        PUSH_RETRIES=$((PUSH_RETRIES + 1))
+      fi
     fi
   fi
 
@@ -657,10 +756,19 @@ Status: $CURRENT_DONE done, $QA_READY qa-ready, $PENDING pending, $FAILED failed
       continue
     fi
 
-    # Try retrying failed tasks before declaring done
-    if [ "$FAILED" -gt 0 ] && retry_failed_tasks; then
-      smart_sleep "$POLL_INTERVAL"
-      continue
+    # Try retrying failed tasks (with backoff — wait RETRY_BACKOFF seconds after last failure)
+    if [ "$FAILED" -gt 0 ]; then
+      local since_failure=$(( NOW - LAST_FAILURE_TIME ))
+      if [ "$LAST_FAILURE_TIME" -gt 0 ] && [ "$since_failure" -lt "$RETRY_BACKOFF" ]; then
+        local remaining=$(( RETRY_BACKOFF - since_failure ))
+        house_log "👩🏽⏳ Cooling down... ${remaining}s before retrying failed task(s). \"Let it breathe.\""
+        smart_sleep "$POLL_INTERVAL"
+        continue
+      fi
+      if retry_failed_tasks; then
+        smart_sleep "$POLL_INTERVAL"
+        continue
+      fi
     fi
 
     # Log "all done" only ONCE to prevent spam
