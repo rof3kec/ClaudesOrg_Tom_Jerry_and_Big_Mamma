@@ -1,0 +1,52 @@
+# ── The House: AI Provider & Model Config (TEMPLATE) ───────────────────────────
+#
+# Copy this file to `house-model.conf` and fill in your own values.
+#   cp house-model.conf.example house-model.conf
+#
+# house-model.conf is gitignored — it holds your real API key and must NEVER
+# be committed. Keep secrets out of version control.
+#
+# Edit the real file via the dashboard (⚙ gear icon) or directly.
+# Changes apply on next House start.
+#
+# HOUSE_PROVIDER  : claude | gemini | openai
+#                   Determines which CLI tool is invoked.
+#
+# Model names are passed as-is to the CLI (--model <value>).
+# Leave blank to use the CLI's own default.
+#
+# Role assignments:
+#   planner = Big Mamma (supervisor, orchestration)
+#   worker  = Tom (primary sequential task runner)
+#   jerry   = Jerry workers (parallel tasks — use fast/flash models here)
+#   qa      = Spike / Sdike (code quality checks)
+#
+# HOUSE_API_KEY   : API key injected into the appropriate env var automatically
+#                   (ANTHROPIC_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY).
+#                   You can also leave this blank and export the env var yourself.
+#
+# HOUSE_BASE_URL  : Optional base URL override (e.g., proxy or local LLM gateway)
+#
+# Example — Gemini:
+#   HOUSE_PROVIDER=gemini
+#   HOUSE_PLANNER_MODEL=gemini-3.1-pro
+#   HOUSE_WORKER_MODEL=gemini-3.1-pro
+#   HOUSE_JERRY_MODEL=gemini-3.5-flash
+#   HOUSE_QA_MODEL=gemini-3.5-flash
+#   HOUSE_API_KEY=AIza...your-key-here...
+#
+# Example — Claude with custom models:
+#   HOUSE_PROVIDER=claude
+#   HOUSE_PLANNER_MODEL=claude-opus-4-8
+#   HOUSE_WORKER_MODEL=claude-sonnet-4-6
+#   HOUSE_JERRY_MODEL=claude-haiku-4-5-20251001
+#   HOUSE_QA_MODEL=claude-haiku-4-5-20251001
+# ──────────────────────────────────────────────────────────────────────────────
+
+HOUSE_PROVIDER=gemini
+HOUSE_PLANNER_MODEL=gemini-3.1-pro
+HOUSE_WORKER_MODEL=gemini-3.1-pro
+HOUSE_JERRY_MODEL=gemini-3.5-flash
+HOUSE_QA_MODEL=gemini-3.5-flash
+HOUSE_API_KEY=
+HOUSE_BASE_URL=

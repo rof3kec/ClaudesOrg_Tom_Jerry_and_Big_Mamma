@@ -7,3 +7,6 @@ build/
 .env
 *.log
 .task-failures
+
+# Contains HOUSE_API_KEY — never commit. Use house-model.conf.example as the template.
+house-model.conf
