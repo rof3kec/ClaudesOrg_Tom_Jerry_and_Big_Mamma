@@ -200,6 +200,11 @@ ${_cont}"
   # Build AI command (provider + model from house-model.conf)
   CLAUDE_CMD=$(get_ai_cmd worker "$AUTO_MODE")
 
+  # Fingerprint the working tree BEFORE running — so we can prove Tom actually
+  # changed something, not just that the CLI exited 0 (which it does even when
+  # the AI does nothing, refuses, or just chats).
+  TREE_BEFORE=$(house_tree_fingerprint)
+
   # Run Claude on the task — track PID so Big Mamma can check liveness
   EXIT_CODE=0
   set +e
@@ -222,13 +227,25 @@ ${_cont}"
   rm -f "$PID_FILE"
   set -e
 
+  # Did Tom actually touch the project, or just exit 0 having done nothing?
+  TOM_DID_WORK=true
+  if [ "$EXIT_CODE" -eq 0 ] && ! house_worktree_changed "$TREE_BEFORE"; then
+    TOM_DID_WORK=false
+  fi
+
   # Mark task result (with lock to prevent race with Big Mamma)
   lock_tasks
-  if [ "$EXIT_CODE" -eq 0 ]; then
+  if [ "$EXIT_CODE" -eq 0 ] && [ "$TOM_DID_WORK" = true ]; then
     house_log "${_C_GREEN}✓ TASK DONE ─── [Tom] #${LINE_NUM}: ${TASK_DESC}${_C_RST}"
     sedi "${LINE_NUM}s/^\[!\] /[q] /" "$TASK_FILE"
     # Add to dedup set so we don't re-process if task appears again
     RECENTLY_COMPLETED="${RECENTLY_COMPLETED:+$RECENTLY_COMPLETED }$TASK_HASH"
+  elif [ "$EXIT_CODE" -eq 0 ] && [ "$TOM_DID_WORK" = false ]; then
+    # Exit 0 but the working tree is unchanged — the AI claimed completion
+    # without editing anything. This is the "lies about doing work" case.
+    house_log "${_C_YELLOW}✗ NO-OP ─── [Tom] #${LINE_NUM}: exited clean but changed NOTHING. Not done!${_C_RST}"
+    house_log "   🐱 \"I, uh... was just SIZING IT UP, Big Mamma. I'll catch it for real.\""
+    sedi "${LINE_NUM}s/^\[!\] /[-] /" "$TASK_FILE"
   else
     house_log "${_C_RED}✗ TASK FAILED ─── [Tom] #${LINE_NUM} (exit $EXIT_CODE): ${TASK_DESC}${_C_RST}"
     sedi "${LINE_NUM}s/^\[!\] /[-] /" "$TASK_FILE"

@@ -15,7 +15,7 @@
 # Architecture:
 #   Big Mamma (the boss) coordinates:
 #     - 🐱 Tom (claude-worker.sh) — primary task chaser
-#     - 🐭 Nx Jerry (spawned in git worktrees) — parallel sneaky workers
+#     - 🐭 Nx Jerry — parallel sneaky workers (edit the shared tree directly)
 #     - 🐶 Spike (claude-qa.sh) — quality enforcer
 #   Big Mamma handles: commits, pushes, merges, hibernation, stale recovery.
 
@@ -75,11 +75,13 @@ P_PIDS=()
 P_TASK_LINES=()
 P_TASK_DESCS=()
 P_ACTIVE=()
+P_TREE_BEFORE=()   # working-tree fingerprint at spawn (no-op detection)
 for ((_ji=0; _ji<MAX_PARALLEL; _ji++)); do
   P_PIDS+=("")
   P_TASK_LINES+=("")
   P_TASK_DESCS+=("")
   P_ACTIVE+=(false)
+  P_TREE_BEFORE+=("")
 done
 PARALLEL_LAST_ANALYSIS=0
 
@@ -156,6 +158,25 @@ TOM_ACTIVE=false
 TOM_TASK_LINE=""
 TOM_TASK_DESC=""
 TOM_TASK_STARTED=""
+
+# ─── Commit barrier ─────────────────────────────────────────────────────────
+# True if Tom or ANY Jerry is currently alive and editing files. Used to hold
+# off `git add -A` so a commit never snapshots a worker's half-written files.
+# Reads live process state (TOM_ACTIVE/P_ACTIVE[] are set synchronously at
+# spawn), not the top-of-loop task counts, which go stale the moment we spawn
+# fresh workers later in the same iteration.
+any_worker_busy() {
+  if [ "$TOM_ACTIVE" = true ] && is_process_alive "$TOM_PID"; then
+    return 0
+  fi
+  local i
+  for ((i=0; i<MAX_PARALLEL; i++)); do
+    if [ "${P_ACTIVE[$i]}" = true ] && is_process_alive "${P_PIDS[$i]}" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 assign_next_to_tom() {
   local sep_line
@@ -390,13 +411,14 @@ if ! git remote get-url origin &>/dev/null; then
   house_die "No 'origin' remote configured."
 fi
 
-# ─── Fix Git safe.directory for Jerry clones (Windows compatibility) ───────
+# ─── Fix Git safe.directory (Windows compatibility) ────────────────────────
 # On Windows filesystems without ownership (FAT32, exFAT, network drives),
-# git clone fails with "dubious ownership" error. Add exception for .git dir.
+# git refuses to operate with a "dubious ownership" error. Add an exception
+# for this repo's .git dir so Big Mamma's commits/pushes work.
 REPO_GIT_DIR="$(pwd)/.git"
 if ! git config --get-all safe.directory | grep -qF "$REPO_GIT_DIR" 2>/dev/null; then
   if git config --global --add safe.directory "$REPO_GIT_DIR" >> "$VERBOSE_LOG" 2>&1; then
-    house_log "👩🏽🔧 Added git safe.directory exception for Jerry clones (Windows fix)"
+    house_log "👩🏽🔧 Added git safe.directory exception (Windows fix)"
   fi
 fi
 
@@ -458,7 +480,8 @@ smart_sleep() {
 # Start fresh
 rm -f "$HIBERNATE_FILE" "$NOTIFICATION_FILE" "$TASK_FAILURES_FILE"
 rm -rf "$LOCK_DIR"
-# Prune stale worktrees from previous runs
+# Legacy cleanup: older versions ran Jerrys in worktrees. Current Jerrys edit
+# the shared tree directly, but prune any leftovers from an upgraded install.
 git worktree prune >> "$VERBOSE_LOG" 2>&1 || true
 
 house_log "╔═══════════════════════════════════════════════════════╗"
@@ -673,6 +696,14 @@ while true; do
     if [ "$ELAPSED" -lt "$COMMIT_BATCH_WAIT" ]; then
       REMAINING=$((COMMIT_BATCH_WAIT - ELAPSED))
       house_log "👩🏽⏳ Hold your horses... ${REMAINING}s until commit (letting things settle)"
+      smart_sleep "$POLL_INTERVAL"
+      continue
+    fi
+
+    # Commit barrier: never `git add -A` while a worker is mid-edit, or the
+    # commit captures half-written files from a freshly-spawned Tom/Jerry.
+    if any_worker_busy; then
+      house_log "👩🏽✋ Not committing yet — somebody's still got their hands in the cookie jar. Waiting for workers to finish."
       smart_sleep "$POLL_INTERVAL"
       continue
     fi

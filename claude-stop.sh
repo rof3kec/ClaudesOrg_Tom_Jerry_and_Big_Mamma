@@ -183,9 +183,10 @@ if [ -f "$TASK_FILE" ]; then
   fi
 fi
 
-# Clean up parallel worktrees (Jerry's hideouts)
+# Legacy cleanup: current Jerrys edit the shared tree directly. This only fires
+# for installs upgraded from the old worktree-based parallelism.
 if [ -d ".worktrees" ]; then
-  echo "[claude-stop] Cleaning up Jerry's worktree hideouts..."
+  echo "[claude-stop] Cleaning up leftover Jerry worktree hideouts (legacy)..."
   for wt in .worktrees/parallel-*; do
     [ -d "$wt" ] || continue
     branch=$(basename "$wt")

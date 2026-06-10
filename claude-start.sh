@@ -215,7 +215,7 @@ Database is PostgreSQL with Drizzle ORM — migrations in /api/drizzle/.
 ```
 
 Big Mamma uses this context to decide which tasks can safely run in parallel
-and to give Jerry workers the right context when they work in isolated worktrees.
+and to give Jerry workers the right context when they edit files.
 <!-- END-BIG-MAMMA-TASK-INSTRUCTIONS -->
 CLAUDEEOF
   echo "[claude-start] ✓ CLAUDE.md now has task-writing instructions."
@@ -313,7 +313,7 @@ SDIKE_PID=""
 TAIL_PID=""
 CLEANING_UP=false
 SPIKE_LAST_RESTART=0
-SDIKE_THRESHOLD=5
+SDIKE_THRESHOLD=3   # call in Spike's brother once 3+ tasks pile up in QA (was 5)
 
 cleanup() {
   # Prevent re-entrant cleanup (trap EXIT fires after trap INT/TERM)

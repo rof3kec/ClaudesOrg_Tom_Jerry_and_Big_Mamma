@@ -5,7 +5,7 @@
 
     Big Mamma .............. Supervisor (runs the house, bosses everyone)
     Tom the Cat ............ Primary Worker (chases tasks like mice)
-    Jerry xN ............... Parallel Workers (sneak through worktrees, specializable)
+    Jerry xN ............... Parallel Workers (edit the shared tree, specializable)
     Spike the Bulldog ...... QA Enforcer (nobody ships bugs on HIS watch)
 
   Five bash scripts, a web dashboard, and one glorious household of
@@ -25,8 +25,9 @@
                         [q] for QA, repeats.
 
   claude-supervisor.sh  Big Mamma -- coordinates all workers, deploys
-                        up to N Jerrys in git worktrees for independent
-                        tasks, commits, pushes, cleans up, bosses everyone.
+                        up to N Jerrys on independent tasks (shared tree,
+                        conflict-aware routing), commits, pushes, cleans
+                        up, bosses everyone.
 
   claude-qa.sh          Spike -- monitors [q] tasks, sniffs for
                         build/lint/type errors, promotes to [x] on pass,
@@ -147,9 +148,16 @@ TASK FILE FORMAT (TASKS.md)
   and 2+ tasks are pending, she asks Claude to identify tasks that can
   safely run in parallel (different files/features, no dependencies).
 
-  Jerry count is configurable with --jerries N (default: 2). Each Jerry
-  runs in its own git worktree (isolated hideout). This means up to N+1
-  tasks execute at once: 1 Tom + N Jerrys.
+  Jerry count is configurable with --jerries N (default: 2). All Jerrys
+  edit files directly in the shared working tree -- no worktrees, no
+  branches, no git operations of their own. Big Mamma is the sole git
+  actor (commits, pushes, merges). This means up to N+1 tasks execute at
+  once: 1 Tom + N Jerrys.
+
+  Because everyone shares one tree, Big Mamma uses conflict-aware "smart
+  routing" to only run Jerrys on tasks that touch disjoint files, and she
+  holds off committing until every worker is idle (the commit barrier) so
+  a commit never captures a half-written file.
 
   JERRY SPECIALIZATIONS
 
@@ -172,21 +180,23 @@ TASK FILE FORMAT (TASKS.md)
   2. Pass 2: Remaining free slots fill with any unassigned task
 
   When a Jerry finishes:
-  - Success -> Big Mamma merges the worktree branch, marks task [q]
-  - Merge conflict -> "Same old story..." task re-queued for Tom
+  - Success -> task marked [q]; Big Mamma commits the shared tree once
+    all workers are idle, Spike validates, then she pushes
   - Failure -> Jerry "got caught in a mousetrap!" task re-queued
+    (re-queued up to TASK_FAIL_MAX times, then marked permanently failed)
 
-  Jerrys are instructed to edit files only (no builds or installs)
-  since Spike validates everything after merge.
+  Jerrys are instructed to edit files only (no builds, installs, or git
+  commands) since Spike validates everything after commit.
 
   BIG MAMMA (claude-supervisor.sh)
   ─────────────────────────────────
   1. Every 15 seconds, counts completed tasks in TASKS.md
   2. If new [q] tasks detected:
      a. Debounces 30 seconds ("Hold your horses...")
-     b. Stages, commits locally ("Packaging up the work...")
+     b. Waits for ALL workers to go idle (commit barrier), then stages
+        and commits locally ("Packaging up the work...")
      c. Waits for Spike's verdict before pushing
-  3. Manages the Jerrys (spawn, monitor, merge, cleanup)
+  3. Manages the Jerrys (spawn, monitor, mark [q], cleanup slots)
   4. Detects stale tasks ("THOMAS! Did you fall ASLEEP?!")
   5. After Spike validates ([q] -> [x]), tidies the task list
   6. If Spike is not running, auto-promotes [q] -> [x]
@@ -309,6 +319,12 @@ TASK FILE FORMAT (TASKS.md)
 
   SAFETY
   
+  - No-op gate: a task is only marked [q] if the worker ACTUALLY changed a
+    project file. Exit 0 alone is not trusted (the AI can end its turn cleanly
+    without editing anything). Tom marks such a no-op [-]; a Jerry no-op is
+    re-queued (up to TASK_FAIL_MAX, then [-]). Bookkeeping files (status, logs,
+    locks, TASKS.md marks) are excluded from the check, and the gate disables
+    itself in non-git directories so it never blocks legitimate work.
   - Will NOT push to main or master ("Big Mamma didn't raise no fool")
   - Debounces commits so rapid completions batch together
   - Never interrupts Tom mid-task
@@ -316,8 +332,11 @@ TASK FILE FORMAT (TASKS.md)
   - Only cleans tasks that Spike has validated (VALIDATED_DONE fence)
   - If Spike is offline, Big Mamma auto-promotes [q] -> [x] with a warning
   - Line-number safety: no cleanup while workers hold task references
-  - Jerrys use git worktrees (isolated hideouts, no file conflicts)
-  - Merge conflicts -> task re-queued for sequential, no data loss
+  - Conflict-aware routing: Jerrys only run on tasks touching disjoint
+    files, so concurrent edits to the shared tree don't collide
+  - Commit barrier: Big Mamma won't commit while any worker is mid-edit,
+    so commits never capture half-written files
+  - Failed tasks re-queued (up to TASK_FAIL_MAX), no data loss
   - Hibernates when idle -- zero API token usage
   - Pull --rebase on push conflicts, with force-with-lease fallback
   - Cross-platform process management (Windows/MSYS taskkill fallback)
@@ -359,9 +378,12 @@ TASK FILE FORMAT (TASKS.md)
   Fix:     Make sure the line starts with exactly [ ] (space inside
            brackets). No leading whitespace, no "- [ ]" prefix.
 
-  Problem: Jerrys keep getting merge conflicts ("Same old story...")
-  Fix:     Tasks may not be truly independent. Make them touch different
-           files/directories. The system auto-falls-back to sequential.
+  Problem: Two Jerrys clobber each other's edits to the same file
+  Fix:     Conflict-aware routing only parallelizes tasks it judges to
+           touch disjoint files; tasks it can't separate run sequentially
+           on Tom. If clobbering still happens, the tasks weren't truly
+           independent -- make them touch different files/directories, or
+           lower --jerries.
 
   Problem: kill doesn't work on Windows (MSYS/Git Bash)
   Fix:     The scripts use taskkill via /proc/<pid>/winpid as fallback.

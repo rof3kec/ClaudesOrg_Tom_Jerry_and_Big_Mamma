@@ -3,19 +3,21 @@
 #
 # Sourced by claude-supervisor.sh. Requires house-common.sh loaded first.
 #
+# Jerrys edit files directly in the shared working tree (no worktrees, no git
+# ops of their own) — Big Mamma handles all commits/pushes/merges.
+#
 # Globals read:  MAX_PARALLEL, TASK_FILE, AUTO_MODE, MAMMA_INSTRUCTIONS,
 #                VERBOSE_LOG, BRANCH, PENDING
-# Globals write: P_PIDS[], P_WORKTREES[], P_BRANCHES[], P_TASK_LINES[],
-#                P_TASK_DESCS[], P_ACTIVE[], PARALLEL_LAST_ANALYSIS,
-#                PENDING_COMMIT, LAST_CHANGE_TIME
+# Globals write: P_PIDS[], P_TASK_LINES[], P_TASK_DESCS[], P_ACTIVE[],
+#                PARALLEL_LAST_ANALYSIS, PENDING_COMMIT, LAST_CHANGE_TIME
 
 # Guard against double-sourcing
 [[ -n "${_HOUSE_JERRY_LOADED:-}" ]] && return 0
 _HOUSE_JERRY_LOADED=1
 
 # ─── Array State (initialized by supervisor before sourcing) ───────────────
-# P_PIDS[], P_WORKTREES[], P_BRANCHES[], P_TASK_LINES[],
-# P_TASK_DESCS[], P_ACTIVE[] — must be pre-allocated by caller.
+# P_PIDS[], P_TASK_LINES[], P_TASK_DESCS[], P_ACTIVE[] — one slot per Jerry,
+# pre-allocated by caller (claude-supervisor.sh).
 
 # ─── Slot Management ──────────────────────────────────────────────────────
 
@@ -218,6 +220,12 @@ STARTED=$(date +%s)
 UPDATED=$(date +%s)
 EOF
 
+  # Fingerprint the tree before this Jerry edits, so completion can be gated on
+  # real changes (exit 0 alone doesn't mean the AI actually edited anything).
+  # Conflict-aware routing keeps concurrent Jerrys on disjoint files, so a
+  # change appearing between this baseline and completion is attributable here.
+  P_TREE_BEFORE[$slot]=$(house_tree_fingerprint)
+
   # Build command (jerry role = fast/flash model)
   CLAUDE_SPAWN=$(get_ai_cmd jerry "$AUTO_MODE")
 
@@ -288,7 +296,13 @@ check_parallel_workers() {
     wait "${P_PIDS[$i]}" 2>/dev/null
     local p_exit=$?
 
-    if [ "$p_exit" -eq 0 ]; then
+    # Exit 0 only proves the CLI ended its turn — not that Jerry edited anything.
+    local jerry_did_work=true
+    if [ "$p_exit" -eq 0 ] && ! house_worktree_changed "${P_TREE_BEFORE[$i]}"; then
+      jerry_did_work=false
+    fi
+
+    if [ "$p_exit" -eq 0 ] && [ "$jerry_did_work" = true ]; then
       house_log "${_C_GREEN}✓ TASK DONE ─── [Jerry #${i}] #${P_TASK_LINES[$i]}: ${P_TASK_DESCS[$i]}${_C_RST}"
       # Mark task as ready for QA (Spike will promote to [x])
       lock_tasks
@@ -297,6 +311,23 @@ check_parallel_workers() {
       unlock_tasks
       PENDING_COMMIT=true
       LAST_CHANGE_TIME=$(date +%s)
+      cleanup_parallel_slot "$i"
+    elif [ "$p_exit" -eq 0 ] && [ "$jerry_did_work" = false ]; then
+      # Clean exit but the tree is unchanged — Jerry claimed done, did nothing.
+      house_log "${_C_YELLOW}✗ NO-OP ─── [Jerry #${i}] #${P_TASK_LINES[$i]}: exited clean but changed NOTHING. Re-queuing!${_C_RST}"
+      local fail_count
+      fail_count=$(record_task_failure "${P_TASK_DESCS[$i]}")
+      lock_tasks
+      local tl="${P_TASK_LINES[$i]}"
+      if [ "$fail_count" -ge "$TASK_FAIL_MAX" ]; then
+        sedi "${tl}s/^\[!\] /[-] /" "$TASK_FILE"
+        house_log "   👩🏽✗ Task produced no changes $fail_count times. Marking PERMANENTLY failed."
+      else
+        sedi "${tl}s/^\[!\] /[ ] /" "$TASK_FILE"
+        house_log "   🐭 No-op re-queued (attempt $fail_count/$TASK_FAIL_MAX)"
+      fi
+      unlock_tasks
+      LAST_FAILURE_TIME=$(date +%s)
       cleanup_parallel_slot "$i"
     else
       house_log "${_C_RED}✗ TASK FAILED ─── [Jerry #${i}] #${P_TASK_LINES[$i]} (exit $p_exit): ${P_TASK_DESCS[$i]}${_C_RST}"
@@ -330,6 +361,7 @@ cleanup_parallel_slot() {
   P_TASK_LINES[$slot]=""
   P_TASK_DESCS[$slot]=""
   P_ACTIVE[$slot]=false
+  P_TREE_BEFORE[$slot]=""
   PARALLEL_LAST_ANALYSIS=0
 
   house_log "   🐭 Jerry #$slot finished. Clean slate."

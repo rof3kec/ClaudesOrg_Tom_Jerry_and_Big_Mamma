@@ -48,11 +48,13 @@ else
   STATUS_FILE=".qa-status"
 fi
 MAX_PARALLEL=$(cat .house-jerries 2>/dev/null || echo 2)
-POLL_INTERVAL=20
+POLL_INTERVAL=10           # how often Spike sniffs the queue (was 20 — snappier)
 MAX_FIX_RETRIES=3
 FIX_ATTEMPT=0
 QA_ERRORS=""
-QA_DEBOUNCE=30             # wait this many seconds after last completion before QA
+QA_DEBOUNCE=20             # settle window after new tasks land before running QA
+QA_BACKLOG_FORCE=5         # if this many tasks are waiting, check NOW (skip the settle wait)
+QA_RECHECK_INTERVAL=120    # re-check stranded [q] tasks if this long since the last QA pass
 QA_PENDING_SINCE=0         # timestamp when we first noticed new completions
 
 if [ ! -f "$TASK_FILE" ]; then
@@ -210,6 +212,7 @@ trap 'cleanup_qa; exit 0' INT TERM
 # ─── Startup ─────────────────────────────────────────────────────────────────
 
 LAST_CHECKED_QA=0
+LAST_QA_PASS_TS=$(date +%s)   # when we last actually ran a QA check (for stranded-task rescue)
 write_qa_status "idle"
 
 if [ "$IDENTITY" = "sdike" ]; then
@@ -233,7 +236,26 @@ while true; do
   CURRENT_QA=$(count_qa_ready)
   NOW_TS=$(date +%s)
 
+  # Decide whether Spike should check this cycle. Three independent triggers:
+  #   1. NEW work     — more [q] tasks than we last acted on
+  #   2. STRANDED work — [q] tasks exist but haven't been checked in a long time
+  #                      (rescues tasks left behind after a failed/stalled fix cycle)
+  SINCE_LAST_PASS=$((NOW_TS - LAST_QA_PASS_TS))
+  HAVE_NEW_WORK=false
+  HAVE_STRANDED_WORK=false
   if [ "$CURRENT_QA" -gt "$LAST_CHECKED_QA" ] || { [ "$CURRENT_QA" -gt 0 ] && [ "$LAST_CHECKED_QA" -eq 0 ]; }; then
+    HAVE_NEW_WORK=true
+  fi
+  if [ "$CURRENT_QA" -gt 0 ] && [ "$SINCE_LAST_PASS" -ge "$QA_RECHECK_INTERVAL" ]; then
+    HAVE_STRANDED_WORK=true
+  fi
+
+  if [ "$HAVE_NEW_WORK" = true ] || [ "$HAVE_STRANDED_WORK" = true ]; then
+    if [ "$HAVE_STRANDED_WORK" = true ] && [ "$HAVE_NEW_WORK" = false ]; then
+      house_log "$QA_ICON🦴 $QA_NAME smells something stale — $CURRENT_QA task(s) sat in QA too long. Re-inspecting!"
+      QA_PENDING_SINCE=1   # stranded work has already waited plenty; don't debounce again
+    fi
+
     # New QA-ready tasks detected — start/reset the debounce timer
     if [ "$QA_PENDING_SINCE" -eq 0 ]; then
       if [ "$IDENTITY" = "sdike" ]; then
@@ -244,18 +266,22 @@ while true; do
       QA_PENDING_SINCE=$NOW_TS
     fi
 
-    # Debounce: wait for QA_DEBOUNCE seconds of stability before checking
-    # This prevents running QA on every single task during rapid sequential execution
+    # Debounce: wait for QA_DEBOUNCE seconds of stability before checking.
+    # This prevents running QA on every single task during rapid sequential
+    # execution. BUT: if the backlog is deep (>= QA_BACKLOG_FORCE), or tasks have
+    # been settling longer than the debounce window in total, check NOW. Otherwise
+    # a steady drip of completions would reset the timer forever and Spike would
+    # never actually run — the exact "10+ tasks stuck pending QA" failure.
     DEBOUNCE_ELAPSED=$((NOW_TS - QA_PENDING_SINCE))
-    if [ "$DEBOUNCE_ELAPSED" -lt "$QA_DEBOUNCE" ]; then
-      # Check if more tasks are still completing (reset timer)
+    if [ "$CURRENT_QA" -lt "$QA_BACKLOG_FORCE" ] && [ "$DEBOUNCE_ELAPSED" -lt "$QA_DEBOUNCE" ]; then
+      # Still settling and backlog is shallow — wait one poll, but do NOT reset the
+      # timer just because more tasks arrived. The timer only ever moves forward to
+      # expiry, guaranteeing Spike checks within QA_DEBOUNCE of the FIRST task.
       sleep "$POLL_INTERVAL"
-      NEW_QA=$(count_qa_ready)
-      if [ "$NEW_QA" -gt "$CURRENT_QA" ]; then
-        QA_PENDING_SINCE=$NOW_TS  # reset debounce — more tasks completing
-        house_log "$QA_ICON⏳ More tasks landing in QA... $QA_NAME resets his sniff timer."
-      fi
       continue
+    fi
+    if [ "$CURRENT_QA" -ge "$QA_BACKLOG_FORCE" ] && [ "$DEBOUNCE_ELAPSED" -lt "$QA_DEBOUNCE" ]; then
+      house_log "$QA_ICON🔥 Backlog is deep ($CURRENT_QA tasks)! $QA_NAME stops waiting and dives in NOW."
     fi
 
     # Debounce expired — also wait for workers to finish current task
@@ -294,6 +320,7 @@ while true; do
     CHECKING_DESCS=$(get_recent_qa_tasks)
     write_qa_status "checking" "" "" "$CHECKING_DESCS"
     QA_PENDING_SINCE=0
+    LAST_QA_PASS_TS=$(date +%s)   # a real inspection is happening now — reset stranded timer
 
     if run_checks; then
       # Promote all [q] → [x] (QA approves!)

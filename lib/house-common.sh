@@ -137,6 +137,66 @@ read_kv() {
   return 0
 }
 
+# ─── Work Verification (anti "did nothing, reported done") ──────────────────────
+# A worker exiting 0 only means the AI CLI ended its turn cleanly — NOT that the
+# requested change was actually made. These helpers fingerprint the working tree
+# (content of every changed/new project file) so callers can prove a worker
+# touched something before promoting a task to [q].
+#
+# The fingerprint deliberately IGNORES the House's own bookkeeping files (status,
+# locks, pids, logs, and the task file itself with its [!] marks) — otherwise the
+# mere act of claiming a task would register as "work" and defeat the check.
+
+# Is the given path one of the House's own runtime/bookkeeping files?
+_house_is_bookkeeping_path() {
+  case "$1" in
+    "${TASK_FILE:-TASKS.md}"|TASKS.md|TASK.md) return 0 ;;
+    *.log|*.log.old)                           return 0 ;;
+    .worker-status|.qa-status|.qa-status-sdike) return 0 ;;
+    .parallel-status-*)                         return 0 ;;
+    .worker-hibernate|.claude-worker.pid)       return 0 ;;
+    .house-jerries|.house-jerry-specs.json)     return 0 ;;
+    .house-instances|.house-dispatch-cache)     return 0 ;;
+    .task-failures)                             return 0 ;;
+    .tasks.lock*|.qa-running.lock*|.claude-start.lock*) return 0 ;;
+    *.tmp)                                      return 0 ;;
+  esac
+  return 1
+}
+
+# Emit a content fingerprint of the working tree, excluding House bookkeeping.
+# Format: one "path:contenthash" line per changed/new/deleted project file,
+# reduced to a single checksum. Identical trees → identical output, so two
+# fingerprints taken before and after a task can be compared for equality.
+house_tree_fingerprint() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "no-git"; return 0; }
+  {
+    git diff --name-only HEAD 2>/dev/null || git diff --name-only 2>/dev/null
+    git diff --cached --name-only 2>/dev/null
+    git ls-files --others --exclude-standard 2>/dev/null
+  } | sort -u | while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    _house_is_bookkeeping_path "$_f" && continue
+    if [ -f "$_f" ]; then
+      printf '%s:%s\n' "$_f" "$(cksum < "$_f" 2>/dev/null | cut -d' ' -f1)"
+    else
+      printf '%s:DELETED\n' "$_f"
+    fi
+  done | cksum | cut -d' ' -f1
+}
+
+# Did the working tree actually change since the given baseline fingerprint?
+# Returns 0 (yes, real work) or 1 (no-op). If git is unavailable the gate is
+# DISABLED and this returns 0 — we can't prove a no-op, so we don't block.
+house_worktree_changed() {
+  local baseline="$1"
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  [ "$baseline" = "no-git" ] && return 0
+  local now
+  now=$(house_tree_fingerprint)
+  [ "$now" != "$baseline" ]
+}
+
 # ─── Log Rotation ─────────────────────────────────────────────────────────────
 
 rotate_log_if_needed() {
