@@ -17,6 +17,9 @@
 [[ -n "${_HOUSE_COMMON_LOADED:-}" ]] && return 0
 _HOUSE_COMMON_LOADED=1
 
+# ─── AI provider (must come early so callers can use get_ai_cmd) ─────────────
+source "${SCRIPT_DIR}/lib/house-ai.sh"
+
 # ─── Constants ─────────────────────────────────────────────────────────────────
 
 LOCK_DIR="${LOCK_DIR:-.tasks.lock}"

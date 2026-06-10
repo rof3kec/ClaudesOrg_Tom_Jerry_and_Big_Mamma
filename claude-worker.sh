@@ -197,11 +197,8 @@ ${_cont}"
   write_status "running" "$LINE_NUM" "$TASK_DESC" "$TASK_START_TIME"
   house_log "${_C_BLUE}▶ TASK STARTED ─── [Tom] #${LINE_NUM}: ${TASK_DESC}${_C_RST}"
 
-  # Build claude command
-  CLAUDE_CMD="claude -p"
-  if [ "$AUTO_MODE" = "--auto" ]; then
-    CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
-  fi
+  # Build AI command (provider + model from house-model.conf)
+  CLAUDE_CMD=$(get_ai_cmd worker "$AUTO_MODE")
 
   # Run Claude on the task — track PID so Big Mamma can check liveness
   EXIT_CODE=0

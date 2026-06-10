@@ -218,9 +218,8 @@ STARTED=$(date +%s)
 UPDATED=$(date +%s)
 EOF
 
-  # Build command
-  CLAUDE_SPAWN="claude -p"
-  [ "$AUTO_MODE" = "--auto" ] && CLAUDE_SPAWN="$CLAUDE_SPAWN --dangerously-skip-permissions"
+  # Build command (jerry role = fast/flash model)
+  CLAUDE_SPAWN=$(get_ai_cmd jerry "$AUTO_MODE")
 
   # Build context for Jerry
   JERRY_CONTEXT=""

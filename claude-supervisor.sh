@@ -239,10 +239,10 @@ ${_ccont}"
     sedi "${cand_line}s/^\[ \] /[!] /" "$TASK_FILE"
     unlock_tasks
 
-    # Spawn Claude for Tom (in main directory — no clone needed)
+    # Spawn AI for Tom (provider + model from house-model.conf)
     TOM_TASK_STARTED=$(date +%s)
-    local cmd="claude -p"
-    [ "$AUTO_MODE" = "--auto" ] && cmd="$cmd --dangerously-skip-permissions"
+    local cmd
+    cmd=$(get_ai_cmd worker "$AUTO_MODE")
 
     ( $cmd "$cand_desc" >> "$WORKER_VERBOSE_LOG" 2>&1; touch "$NOTIFICATION_FILE"; kill -USR1 $$ 2>/dev/null ) &
     TOM_PID=$!
@@ -470,6 +470,7 @@ house_log "Auto mode: ${AUTO_MODE:-off}"
 house_log "CLAUDE.md: $([ -n "$CLAUDE_MD_CONTENT" ] && echo 'loaded ✓' || echo 'not found')"
 house_log "Mamma Instructions: $([ -n "$MAMMA_INSTRUCTIONS" ] && echo 'loaded ✓' || echo 'none')"
 house_log "Jerry slots: $MAX_PARALLEL"
+house_log "AI config: $(get_ai_summary)"
 house_log "Poll interval: ${POLL_INTERVAL}s"
 house_log "Commit debounce: ${COMMIT_BATCH_WAIT}s"
 house_log "Roll call: $(count_done) done, $(count_qa_ready) qa-ready, $(count_in_progress) in-progress, $(count_pending) pending, $(count_failed) failed"

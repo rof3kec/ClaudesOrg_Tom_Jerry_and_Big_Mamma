@@ -110,13 +110,13 @@ Task #${task_lines[$i]}: ${task_descs[$i]}
 "
   done
 
-  # Run Claude analysis (skip permissions in auto mode)
-  local claude_cmd="claude -p"
-  [ "$AUTO_MODE" = "--auto" ] && claude_cmd="$claude_cmd --dangerously-skip-permissions"
+  # Run AI analysis (provider + model from house-model.conf, planner role)
+  local claude_cmd
+  claude_cmd=$(get_ai_cmd planner "${AUTO_MODE:-}")
 
   local analysis_output=""
   analysis_output=$($claude_cmd "$analysis_prompt" 2>&1) || {
-    house_log "   🧠⚠ Analysis failed (Claude error). Falling back to conservative estimates."
+    house_log "   🧠⚠ Analysis failed. Falling back to conservative estimates."
     fallback_analysis "${task_lines[@]}"
     return 1
   }

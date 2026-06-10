@@ -750,6 +750,69 @@ def api_tasks_save():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Model Config ────────────────────────────────────────────────────────────────
+
+MODEL_CONF_FILE = SCRIPT_DIR / "house-model.conf"
+
+_CONF_KEYS = ["HOUSE_PROVIDER", "HOUSE_PLANNER_MODEL", "HOUSE_WORKER_MODEL",
+              "HOUSE_JERRY_MODEL", "HOUSE_QA_MODEL", "HOUSE_API_KEY", "HOUSE_BASE_URL"]
+
+
+def _read_model_conf():
+    data = {k: "" for k in _CONF_KEYS}
+    data["HOUSE_PROVIDER"] = "claude"
+    if not MODEL_CONF_FILE.exists():
+        return data
+    for line in MODEL_CONF_FILE.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" in stripped:
+            k, _, v = stripped.partition("=")
+            k = k.strip()
+            if k in data:
+                data[k] = v.strip()
+    return data
+
+
+def _write_model_conf(values: dict):
+    existing_text = MODEL_CONF_FILE.read_text(encoding="utf-8") if MODEL_CONF_FILE.exists() else ""
+    lines = existing_text.splitlines()
+    updated_keys = set()
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k = stripped.split("=", 1)[0].strip()
+            if k in _CONF_KEYS and k in values:
+                out.append(f"{k}={values[k]}")
+                updated_keys.add(k)
+                continue
+        out.append(line)
+    for k in _CONF_KEYS:
+        if k not in updated_keys and k in values:
+            out.append(f"{k}={values[k]}")
+    MODEL_CONF_FILE.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+@app.route("/api/model-config", methods=["GET"])
+def api_get_model_config():
+    return jsonify(_read_model_conf())
+
+
+@app.route("/api/model-config", methods=["POST"])
+def api_set_model_config():
+    data = request.json or {}
+    allowed = {k: str(data.get(k, "")) for k in _CONF_KEYS if k in data}
+    if not allowed:
+        return jsonify({"error": "No valid keys provided"}), 400
+    try:
+        _write_model_conf(allowed)
+        return jsonify({"ok": True})
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Main ────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

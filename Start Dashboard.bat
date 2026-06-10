@@ -9,8 +9,8 @@ echo       Tom, Jerry ^& Big Mamma
 echo   ========================================
 echo.
 
-:: Check Python
-where python >nul 2>&1
+:: Check Python (use py launcher which is always available)
+where py >nul 2>&1
 if %errorlevel% neq 0 (
     echo   ERROR: Python not found.
     echo   Install from https://www.python.org/downloads/
@@ -20,13 +20,13 @@ if %errorlevel% neq 0 (
 )
 
 :: Auto-install Flask if missing
-python -c "import flask" >nul 2>&1
+py -c "import flask" >nul 2>&1
 if %errorlevel% neq 0 (
     echo   Installing Flask...
-    pip install flask >nul 2>&1
+    py -m pip install flask >nul 2>&1
     if %errorlevel% neq 0 (
         echo   ERROR: Could not install Flask.
-        echo   Try running: pip install flask
+        echo   Try running: py -m pip install flask
         echo.
         pause
         exit /b 1
@@ -42,6 +42,6 @@ start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:5005"
 echo   Starting dashboard at http://localhost:5005
 echo   Close this window to stop.
 echo.
-python "%~dp0ui.py"
+py "%~dp0ui.py"
 
 pause

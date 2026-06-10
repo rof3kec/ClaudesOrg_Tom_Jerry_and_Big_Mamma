@@ -261,36 +261,72 @@ html,body{height:100%;background:var(--bg-0);color:var(--text-1);font-family:var
 .btn-clear-logs:hover{background:rgba(248,81,73,.12);border-color:var(--red);color:var(--red)}
 
 /* ── Scene Window ─────────────────────────────────────────────────── */
-#scene-window{background:linear-gradient(to bottom,#2a1810 0%,#3d2a1f 40%,#8B6242 100%);border-bottom:1px solid var(--border);position:relative;overflow:hidden;flex-shrink:0;height:200px;transition:height .3s ease}
+#scene-window{background:linear-gradient(to bottom,#2a1810 0%,#3d2a1f 40%,#8B6242 100%);border-bottom:1px solid var(--border);position:relative;overflow:hidden;flex-shrink:0;height:260px;transition:height .3s ease}
 #scene-window.collapsed{height:32px}
 .scene-header{padding:6px 24px;display:flex;justify-content:space-between;align-items:center;background:rgba(0,0,0,.3);border-bottom:1px solid rgba(255,255,255,.1);cursor:pointer;user-select:none}
 .scene-header:hover{background:rgba(0,0,0,.4)}
 .scene-header h3{font-size:13px;font-weight:600;color:var(--text-0);margin:0}
 .scene-toggle{font-size:18px;color:var(--text-2);transition:transform .3s ease}
 #scene-window.collapsed .scene-toggle{transform:rotate(180deg)}
-.scene-stage{position:relative;width:100%;height:168px;overflow:hidden}
+.scene-stage{position:relative;width:100%;height:228px;overflow:hidden}
 .scene-bg{position:absolute;inset:0}
-.scene-floor{position:absolute;bottom:0;left:0;right:0;height:60px;background:linear-gradient(to bottom,#6B4423 0%,#5A3818 100%);border-top:2px solid #4A2810}
-.scene-wall{position:absolute;top:0;left:0;right:0;height:108px;background:linear-gradient(135deg,#F5E6D3 0%,#E8D4B8 50%,#D4C4A8 100%)}
-.scene-baseboard{position:absolute;top:106px;left:0;right:0;height:4px;background:#8B6242;box-shadow:0 2px 4px rgba(0,0,0,.3)}
-.scene-window-frame{position:absolute;top:15px;right:40px;width:80px;height:70px;background:linear-gradient(to bottom,#87CEEB,#B0E0F6);border:4px solid #654321;border-radius:4px;box-shadow:inset 0 0 20px rgba(255,255,255,.4)}
+.scene-floor{position:absolute;bottom:0;left:0;right:0;height:80px;background:linear-gradient(to bottom,#6B4423 0%,#5A3818 100%);border-top:2px solid #4A2810}
+.scene-wall{position:absolute;top:0;left:0;right:0;height:148px;background:linear-gradient(135deg,#F5E6D3 0%,#E8D4B8 50%,#D4C4A8 100%)}
+.scene-baseboard{position:absolute;top:146px;left:0;right:0;height:4px;background:#8B6242;box-shadow:0 2px 4px rgba(0,0,0,.3)}
+.scene-window-frame{position:absolute;top:20px;right:60px;width:100px;height:90px;background:linear-gradient(to bottom,#87CEEB,#B0E0F6);border:4px solid #654321;border-radius:4px;box-shadow:inset 0 0 20px rgba(255,255,255,.4)}
 .scene-window-cross{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:100%;height:2px;background:#654321}
 .scene-window-cross:after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:2px;height:100px;background:#654321}
-.scene-char{position:absolute;bottom:60px;transition:left 2s ease-in-out,bottom .5s ease;z-index:10;filter:drop-shadow(2px 3px 3px rgba(0,0,0,.4))}
-.scene-char svg{width:70px;height:70px}
-.scene-char.walking{animation:scene-walk 4s ease-in-out infinite}
-.scene-char.running{animation:scene-run 2s linear infinite}
-.scene-char.scurrying{animation:scene-scurry 3s ease-in-out infinite}
-.scene-char.patrolling{animation:scene-patrol 5s ease-in-out infinite}
-@keyframes scene-walk{0%,100%{left:10%}50%{left:30%}}
-@keyframes scene-run{0%,100%{left:70%}50%{left:20%}}
-@keyframes scene-scurry{0%{left:5%}25%{left:25%}50%{left:15%}75%{left:35%}100%{left:5%}}
-@keyframes scene-patrol{0%,100%{left:60%}50%{left:80%}}
-.scene-char.flipped svg{transform:scaleX(-1)}
+
+/* Scene character container */
+.scene-char{position:absolute;bottom:80px;z-index:10;filter:drop-shadow(2px 3px 3px rgba(0,0,0,.4));transition:left 3s ease-in-out,transform .5s ease}
+.scene-char svg{width:90px;height:90px}
+
+/* Speech bubble for task assignment */
+.speech-bubble{position:absolute;top:-50px;left:50%;transform:translateX(-50%);background:white;color:#333;padding:6px 12px;border-radius:12px;font-size:11px;font-weight:600;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.3);opacity:0;animation:bubble-appear .5s ease forwards;font-family:var(--font);max-width:200px;overflow:hidden;text-overflow:ellipsis;z-index:20}
+.speech-bubble:after{content:'';position:absolute;top:100%;left:20px;border:8px solid transparent;border-top-color:white}
+@keyframes bubble-appear{from{opacity:0;transform:translateX(-50%) translateY(-10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+
+/* Thought bubble - cloud shape showing AI reasoning */
+.thought-bubble{position:absolute;top:-70px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,.95);color:#2a2a2a;padding:8px 14px;border-radius:20px;font-size:10px;font-weight:500;box-shadow:0 3px 12px rgba(0,0,0,.25);font-family:var(--mono);max-width:280px;line-height:1.4;z-index:20;opacity:0;animation:thought-appear .8s ease forwards;word-wrap:break-word;border:2px solid rgba(100,100,100,.2)}
+.thought-bubble:before{content:'';position:absolute;top:100%;left:25%;width:16px;height:16px;background:rgba(255,255,255,.95);border-radius:50%;border:2px solid rgba(100,100,100,.2);border-top:none;border-left:none;margin-top:-6px}
+.thought-bubble:after{content:'';position:absolute;top:100%;left:15%;width:10px;height:10px;background:rgba(255,255,255,.95);border-radius:50%;border:1.5px solid rgba(100,100,100,.2);border-top:none;border-left:none;margin-top:2px}
+@keyframes thought-appear{from{opacity:0;transform:translateX(-50%) translateY(-15px) scale(.9)}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}
+.thought-bubble.thinking{animation:thought-pulse 2s ease-in-out infinite}
+@keyframes thought-pulse{0%,100%{opacity:1}50%{opacity:.7}}
+
+/* Task card floating */
+.task-card{position:absolute;background:var(--yellow);color:#000;padding:4px 8px;border-radius:6px;font-size:10px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,.3);z-index:15;font-family:var(--mono);animation:task-float 2s ease-in-out forwards}
+@keyframes task-float{0%{opacity:1;transform:translate(0,0) rotate(0deg)}100%{opacity:0;transform:translate(var(--tx),var(--ty)) rotate(15deg)}}
 
 /* ── Inline SVG icons ─────────────────────────────────────────────── */
 .icon-inline{display:inline-flex;align-items:center;vertical-align:middle;line-height:0;flex-shrink:0}
 .filter-char{display:inline-block;vertical-align:middle;margin-right:3px;line-height:0}
+
+/* ── AI Settings modal ────────────────────────────────────────────── */
+#ai-settings-modal .modal{width:500px}
+.ai-settings-title{font-size:15px;font-weight:700;color:var(--text-0);margin-bottom:18px;display:flex;align-items:center;gap:8px}
+.ai-provider-tabs{display:flex;gap:4px;margin-bottom:18px;background:var(--bg-0);padding:4px;border-radius:8px;border:1px solid var(--border)}
+.ai-provider-tab{flex:1;padding:6px 10px;border:none;background:transparent;color:var(--text-2);font-size:12px;font-weight:500;border-radius:6px;cursor:pointer;transition:all .15s;font-family:var(--font)}
+.ai-provider-tab:hover{color:var(--text-0)}
+.ai-provider-tab.active{background:var(--bg-3);color:var(--text-0)}
+.ai-roles-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.ai-role-card{background:var(--bg-0);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.ai-role-label{font-size:11px;color:var(--text-2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;display:flex;align-items:center;gap:5px}
+.ai-role-emoji{font-size:14px}
+.ai-role-input{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg-1);color:var(--text-1);font-size:12px;outline:none;font-family:var(--mono)}
+.ai-role-input:focus{border-color:var(--blue)}
+.ai-role-input::placeholder{color:var(--text-3)}
+.ai-section-label{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--text-2);margin-bottom:8px;margin-top:4px}
+.ai-key-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.ai-key-input{flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-0);color:var(--text-1);font-size:12px;outline:none;font-family:var(--mono)}
+.ai-key-input:focus{border-color:var(--blue)}
+.ai-key-input::placeholder{color:var(--text-3)}
+.ai-key-toggle{padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-2);color:var(--text-2);font-size:11px;cursor:pointer;white-space:nowrap;font-family:var(--font)}
+.ai-key-toggle:hover{color:var(--text-0)}
+.ai-hint{font-size:11px;color:var(--text-3);line-height:1.5;margin-bottom:6px}
+.ai-hint code{background:var(--bg-3);padding:1px 5px;border-radius:3px;font-family:var(--mono);font-size:10px;color:var(--text-2)}
+.btn-gear{border:none;background:none;color:var(--text-3);cursor:pointer;padding:0 2px;font-size:17px;line-height:1;transition:color .15s;display:flex;align-items:center}
+.btn-gear:hover{color:var(--text-1)}
 </style>
 </head>
 <body>
@@ -298,9 +334,17 @@ html,body{height:100%;background:var(--bg-0);color:var(--text-1);font-family:var
 <div id="app">
   <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
   <aside id="sidebar">
-    <div class="sidebar-header">
-      <h1><svg class="icon-inline" viewBox="0 0 24 24" width="22" height="22"><path d="M12,2.5 L1,12 L4,12 L4,21.5 L20,21.5 L20,12 L23,12 Z" fill="#E8443A"/><rect x="5" y="12" width="14" height="9.5" fill="#F5D76E"/><rect x="10" y="15" width="4" height="6.5" rx=".5" fill="#8B6242"/><circle cx="13" cy="18.5" r=".5" fill="#F5D76E"/><rect x="6.5" y="13.5" width="3" height="3" rx=".3" fill="#58a6ff" opacity=".85"/><rect x="14.5" y="13.5" width="3" height="3" rx=".3" fill="#58a6ff" opacity=".85"/></svg> The House</h1>
-      <div class="subtitle">Tom, Jerry &amp; Big Mamma</div>
+    <div class="sidebar-header" style="display:flex;align-items:flex-start;justify-content:space-between">
+      <div>
+        <h1><svg class="icon-inline" viewBox="0 0 24 24" width="22" height="22"><path d="M12,2.5 L1,12 L4,12 L4,21.5 L20,21.5 L20,12 L23,12 Z" fill="#E8443A"/><rect x="5" y="12" width="14" height="9.5" fill="#F5D76E"/><rect x="10" y="15" width="4" height="6.5" rx=".5" fill="#8B6242"/><circle cx="13" cy="18.5" r=".5" fill="#F5D76E"/><rect x="6.5" y="13.5" width="3" height="3" rx=".3" fill="#58a6ff" opacity=".85"/><rect x="14.5" y="13.5" width="3" height="3" rx=".3" fill="#58a6ff" opacity=".85"/></svg> The House</h1>
+        <div class="subtitle" id="ai-badge" style="cursor:pointer" onclick="openAiSettings()" title="AI Settings">Tom, Jerry &amp; Big Mamma</div>
+      </div>
+      <button class="btn-gear" onclick="openAiSettings()" title="AI Settings" style="margin-top:2px">
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="10" cy="10" r="3"/>
+          <path d="M10 2v1.5M10 16.5V18M2 10h1.5M16.5 10H18M4.2 4.2l1.1 1.1M14.7 14.7l1.1 1.1M4.2 15.8l1.1-1.1M14.7 5.3l1.1-1.1"/>
+        </svg>
+      </button>
     </div>
     <div class="sidebar-scroll">
 
@@ -441,6 +485,61 @@ html,body{height:100%;background:var(--bg-0);color:var(--text-1);font-family:var
   <div class="editor-footer">
     <div class="editor-hint"><kbd>Ctrl+S</kbd> save &middot; <kbd>Esc</kbd> close</div>
     <div class="editor-hint">Prefixes: [ ] pending &middot; [!] running &middot; [q] qa &middot; [x] done &middot; [-] failed</div>
+  </div>
+</div>
+
+<!-- ── AI Settings Modal ──────────────────────────────────────────────────── -->
+<div id="ai-settings-modal" class="modal-overlay" onclick="closeAiSettings()">
+  <div class="modal" onclick="event.stopPropagation()" style="width:500px;max-height:90vh;overflow-y:auto">
+    <div class="ai-settings-title">
+      <svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3"/><path d="M10 2v1.5M10 16.5V18M2 10h1.5M16.5 10H18M4.2 4.2l1.1 1.1M14.7 14.7l1.1 1.1M4.2 15.8l1.1-1.1M14.7 5.3l1.1-1.1"/></svg>
+      AI Settings
+    </div>
+
+    <div class="ai-section-label">Provider</div>
+    <div class="ai-provider-tabs" id="ai-provider-tabs">
+      <button class="ai-provider-tab" data-provider="claude" onclick="selectProvider('claude')">Claude</button>
+      <button class="ai-provider-tab" data-provider="gemini" onclick="selectProvider('gemini')">Gemini</button>
+      <button class="ai-provider-tab" data-provider="openai" onclick="selectProvider('openai')">OpenAI-compat</button>
+    </div>
+
+    <div class="ai-section-label">Models per role</div>
+    <div class="ai-roles-grid">
+      <div class="ai-role-card">
+        <div class="ai-role-label"><span class="ai-role-emoji">👩🏽</span> Big Mamma <span style="color:var(--text-3)">(planner)</span></div>
+        <input class="ai-role-input" id="ai-planner-model" placeholder="default" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="ai-role-card">
+        <div class="ai-role-label"><span class="ai-role-emoji">🐱</span> Tom <span style="color:var(--text-3)">(worker)</span></div>
+        <input class="ai-role-input" id="ai-worker-model" placeholder="default" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="ai-role-card">
+        <div class="ai-role-label"><span class="ai-role-emoji">🐭</span> Jerry <span style="color:var(--text-3)">(parallel)</span></div>
+        <input class="ai-role-input" id="ai-jerry-model" placeholder="default — use flash" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="ai-role-card">
+        <div class="ai-role-label"><span class="ai-role-emoji">🐶</span> Spike <span style="color:var(--text-3)">(QA)</span></div>
+        <input class="ai-role-input" id="ai-qa-model" placeholder="default" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+    <div class="ai-hint" id="ai-model-hint"></div>
+
+    <div class="ai-section-label">API Key</div>
+    <div class="ai-key-row">
+      <input class="ai-key-input" id="ai-api-key" type="password" placeholder="Paste key here (stored in house-model.conf)" autocomplete="off" spellcheck="false">
+      <button class="ai-key-toggle" onclick="toggleKeyVisibility()">Show</button>
+    </div>
+
+    <div class="ai-section-label" style="margin-top:4px">Base URL <span style="color:var(--text-3);font-size:10px;text-transform:none;letter-spacing:0">(optional proxy / local gateway)</span></div>
+    <input class="ai-key-input" id="ai-base-url" type="text" placeholder="https://..." autocomplete="off" spellcheck="false" style="width:100%;margin-bottom:12px">
+
+    <div class="ai-hint" id="ai-env-hint"></div>
+
+    <div class="form-error" id="ai-settings-error" style="margin-bottom:8px"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeAiSettings()">Cancel</button>
+      <button class="btn btn-accent" onclick="saveAiSettings()">Save</button>
+    </div>
   </div>
 </div>
 
@@ -732,62 +831,311 @@ function getCharacter(agentId, state) {
 
 // ── Scene Window ──────────────────────────────────────────────────────────────
 
+let sceneState = {};
+let taskAssignments = [];
+
 function toggleScene() {
   const scene = $('scene-window');
   scene.classList.toggle('collapsed');
 }
 
-function renderScene(agents) {
+// New character SVGs for scene (walking/working poses)
+function sceneMammaWalking() {
+  return '<svg viewBox="0 0 80 120">'
+    // Walking pose - body leaning forward
+    + '<ellipse cx="40" cy="85" rx="18" ry="12" fill="#8B6242"/>' // body
+    // Dress
+    + '<path d="M25,70 L40,50 L55,70 L55,95 L25,95 Z" fill="#E8443A"/>'
+    // Head
+    + '<ellipse cx="40" cy="40" rx="16" ry="15" fill="#8B6242"/>'
+    // Headwrap
+    + '<path d="M26,35 Q25,22 40,18 Q55,22 54,35" fill="#E8443A"/>'
+    + '<ellipse cx="40" cy="18" rx="5" ry="4" fill="#E8443A"/>'
+    // Rolling pin in hand
+    + '<rect x="58" y="55" width="18" height="4" rx="2" fill="#D4A574" transform="rotate(-30,67,57)"/>'
+    + '<ellipse cx="77" cy="53" rx="3" ry="4" fill="#8B6242" transform="rotate(-30,77,53)"/>'
+    // Face - stern
+    + '<circle cx="33" cy="38" r="2.5" fill="white"/><circle cx="47" cy="38" r="2.5" fill="white"/>'
+    + '<circle cx="33.5" cy="38.5" r="1.5" fill="#2B1810"/><circle cx="47.5" cy="38.5" r="1.5" fill="#2B1810"/>'
+    + '<path d="M28,33 L36,34" stroke="#2B1810" stroke-width="2" stroke-linecap="round"/>'
+    + '<path d="M52,33 L44,34" stroke="#2B1810" stroke-width="2" stroke-linecap="round"/>'
+    // Legs walking
+    + '<ellipse cx="32" cy="105" rx="6" ry="12" fill="#654321"/>'
+    + '<ellipse cx="48" cy="100" rx="6" ry="12" fill="#654321"/>'
+    + '</svg>';
+}
+
+function sceneMammaOrdering() {
+  return '<svg viewBox="0 0 80 120">'
+    // Standing firm, pointing
+    + '<ellipse cx="40" cy="85" rx="20" ry="13" fill="#8B6242"/>'
+    + '<path d="M23,68 L40,48 L57,68 L57,95 L23,95 Z" fill="#E8443A"/>'
+    + '<ellipse cx="40" cy="38" rx="16" ry="15" fill="#8B6242"/>'
+    + '<path d="M26,33 Q25,20 40,16 Q55,20 54,33" fill="#E8443A"/>'
+    + '<ellipse cx="40" cy="16" rx="5" ry="4" fill="#E8443A"/>'
+    // Pointing finger
+    + '<path d="M60,55 L75,45" stroke="#8B6242" stroke-width="5" stroke-linecap="round"/>'
+    + '<circle cx="76" cy="44" r="2.5" fill="#8B6242"/>'
+    // Stern face
+    + '<circle cx="33" cy="36" r="2.5" fill="white"/><circle cx="47" cy="36" r="2.5" fill="white"/>'
+    + '<circle cx="33.5" cy="36.5" r="1.5" fill="#2B1810"/><circle cx="47.5" cy="36.5" r="1.5" fill="#2B1810"/>'
+    + '<path d="M28,30 L36,32" stroke="#2B1810" stroke-width="2.5" stroke-linecap="round"/>'
+    + '<path d="M52,30 L44,32" stroke="#2B1810" stroke-width="2.5" stroke-linecap="round"/>'
+    + '<path d="M34,44 L46,43" stroke="#5A3D28" stroke-width="1.5"/>'
+    // Legs standing
+    + '<ellipse cx="33" cy="105" rx="6" ry="12" fill="#654321"/>'
+    + '<ellipse cx="47" cy="105" rx="6" ry="12" fill="#654321"/>'
+    + '</svg>';
+}
+
+function sceneTomRunning() {
+  return '<svg viewBox="0 0 100 80">'
+    // Running full speed - horizontal stretch
+    + '<ellipse cx="50" cy="50" rx="28" ry="15" fill="#8BAAC7"/>'
+    // Head forward
+    + '<ellipse cx="75" cy="35" rx="16" ry="14" fill="#8BAAC7"/>'
+    // Ears
+    + '<polygon points="65,22 60,8 72,20" fill="#8BAAC7"/><polygon points="66,21 62,12 70,20" fill="#F5A6B8"/>'
+    + '<polygon points="85,22 90,8 78,20" fill="#8BAAC7"/><polygon points="84,21 88,12 80,20" fill="#F5A6B8"/>'
+    // Wide eyes (focused)
+    + '<ellipse cx="70" cy="34" rx="4" ry="5" fill="white"/><ellipse cx="82" cy="34" rx="4" ry="5" fill="white"/>'
+    + '<circle cx="71" cy="35" r="2.5" fill="#2B3A4E"/><circle cx="83" cy="35" r="2.5" fill="#2B3A4E"/>'
+    // Nose
+    + '<path d="M74,38 L76,41 L78,38 Z" fill="#F5A6B8"/>'
+    // Tail extended
+    + '<path d="M22,48 Q10,40 8,28" stroke="#8BAAC7" stroke-width="4" stroke-linecap="round"/>'
+    // Legs in running pose
+    + '<ellipse cx="35" cy="62" rx="5" ry="10" fill="#8BAAC7" transform="rotate(-30,35,62)"/>'
+    + '<ellipse cx="50" cy="66" rx="5" ry="10" fill="#8BAAC7" transform="rotate(20,50,66)"/>'
+    + '<ellipse cx="60" cy="62" rx="5" ry="10" fill="#8BAAC7" transform="rotate(-25,60,62)"/>'
+    + '</svg>';
+}
+
+function sceneTomSitting() {
+  return '<svg viewBox="0 0 80 90">'
+    // Sitting, alert, listening
+    + '<ellipse cx="40" cy="70" rx="18" ry="12" fill="#8BAAC7"/>'
+    + '<ellipse cx="40" cy="42" rx="16" ry="14" fill="#8BAAC7"/>'
+    // Ears up (alert)
+    + '<polygon points="28,30 22,12 34,26" fill="#8BAAC7"/><polygon points="29,29 25,17 33,27" fill="#F5A6B8"/>'
+    + '<polygon points="52,30 58,12 46,26" fill="#8BAAC7"/><polygon points="51,29 55,17 47,27" fill="#F5A6B8"/>'
+    // Attentive eyes
+    + '<ellipse cx="33" cy="40" rx="4" ry="5" fill="white"/><ellipse cx="47" cy="40" rx="4" ry="5" fill="white"/>'
+    + '<circle cx="34" cy="41" r="2.5" fill="#2B3A4E"/><circle cx="48" cy="41" r="2.5" fill="#2B3A4E"/>'
+    + '<circle cx="34.5" cy="40" r="1" fill="white"/><circle cx="48.5" cy="40" r="1" fill="white"/>'
+    // Nose + whiskers
+    + '<path d="M38,46 L40,49 L42,46 Z" fill="#F5A6B8"/>'
+    + '<line x1="15" y1="44" x2="30" y2="45" stroke="#6B8DA8" stroke-width="1"/>'
+    + '<line x1="50" y1="45" x2="65" y2="44" stroke="#6B8DA8" stroke-width="1"/>'
+    // Tail wrapped around
+    + '<path d="M55,68 Q68,70 70,82 Q68,88 60,86" stroke="#8BAAC7" stroke-width="4" stroke-linecap="round"/>'
+    // Front paws together
+    + '<ellipse cx="40" cy="80" rx="8" ry="5" fill="#8BAAC7"/>'
+    + '</svg>';
+}
+
+function sceneJerryRunning() {
+  return '<svg viewBox="0 0 70 60">'
+    // Running low, speed lines
+    + '<ellipse cx="35" cy="35" rx="16" ry="12" fill="#C49A6C" transform="rotate(-10,35,35)"/>'
+    // Big ears (horizontal)
+    + '<circle cx="18" cy="20" r="12" fill="#C49A6C"/><circle cx="18" cy="20" r="8" fill="#F5C7A8"/>'
+    + '<circle cx="52" cy="20" r="12" fill="#C49A6C"/><circle cx="52" cy="20" r="8" fill="#F5C7A8"/>'
+    // Head
+    + '<ellipse cx="35" cy="26" rx="14" ry="11" fill="#C49A6C"/>'
+    + '<ellipse cx="35" cy="30" rx="8" ry="7" fill="#DEBA8A"/>'
+    // Wide eyes
+    + '<circle cx="30" cy="24" r="3.5" fill="white"/><circle cx="40" cy="24" r="3.5" fill="white"/>'
+    + '<circle cx="30.5" cy="24.5" r="2" fill="#3D2B1F"/><circle cx="40.5" cy="24.5" r="2" fill="#3D2B1F"/>'
+    // Nose
+    + '<circle cx="35" cy="28" r="2" fill="#F5A6B8"/>'
+    // Legs blur
+    + '<ellipse cx="25" cy="45" rx="4" ry="8" fill="#C49A6C" opacity=".6"/>'
+    + '<ellipse cx="45" cy="47" rx="4" ry="8" fill="#C49A6C" opacity=".6"/>'
+    // Tail trailing
+    + '<path d="M50,38 Q62,40 64,48" stroke="#C49A6C" stroke-width="2.5" stroke-linecap="round"/>'
+    + '</svg>';
+}
+
+function sceneJerryHiding() {
+  return '<svg viewBox="0 0 50 50">'
+    // Peeking out of hole
+    + '<ellipse cx="25" cy="35" rx="10" ry="8" fill="#C49A6C"/>'
+    // Ears (one visible)
+    + '<circle cx="18" cy="28" r="8" fill="#C49A6C"/><circle cx="18" cy="28" r="5" fill="#F5C7A8"/>'
+    // Eyes peeking
+    + '<circle cx="20" cy="32" r="3" fill="white"/><circle cx="28" cy="32" r="2.5" fill="white"/>'
+    + '<circle cx="20.5" cy="32.5" r="1.8" fill="#3D2B1F"/><circle cx="28.5" cy="32.5" r="1.5" fill="#3D2B1F"/>'
+    // Tiny nose
+    + '<circle cx="24" cy="36" r="1.5" fill="#F5A6B8"/>'
+    // Hole opening (dark)
+    + '<ellipse cx="25" cy="45" rx="15" ry="5" fill="#2B1810"/>'
+    + '</svg>';
+}
+
+function sceneSpikePatrolling() {
+  return '<svg viewBox="0 0 90 85">'
+    // Walking, alert stance
+    + '<rect x="20" y="25" width="50" height="40" rx="18" fill="#C9A96E"/>'
+    // Ears floppy
+    + '<ellipse cx="20" cy="32" rx="7" ry="10" fill="#A08050"/>'
+    + '<ellipse cx="70" cy="32" rx="7" ry="10" fill="#A08050"/>'
+    // Head
+    + '<ellipse cx="45" cy="42" rx="18" ry="14" fill="#C9A96E"/>'
+    + '<ellipse cx="45" cy="50" rx="14" ry="10" fill="#DFC088"/>'
+    // Alert eyes
+    + '<circle cx="37" cy="40" r="4.5" fill="white"/><circle cx="53" cy="40" r="4.5" fill="white"/>'
+    + '<circle cx="37.8" cy="40.8" r="2.8" fill="#2B1810"/><circle cx="53.8" cy="40.8" r="2.8" fill="#2B1810"/>'
+    // Brows serious
+    + '<path d="M30,35 L42,37" stroke="#5A4020" stroke-width="3" stroke-linecap="round"/>'
+    + '<path d="M48,37 L60,35" stroke="#5A4020" stroke-width="3" stroke-linecap="round"/>'
+    // Nose
+    + '<ellipse cx="45" cy="46" rx="5" ry="4" fill="#3D2B1F"/>'
+    // Collar with tag
+    + '<rect x="30" y="58" width="30" height="6" rx="3" fill="#D43D3D"/>'
+    + '<circle cx="45" cy="61" r="2.5" fill="#F5D76E"/>'
+    // Legs walking
+    + '<rect x="28" y="65" width="7" height="16" rx="3" fill="#C9A96E"/>'
+    + '<rect x="55" y="65" width="7" height="16" rx="3" fill="#C9A96E"/>'
+    // Tail up (alert)
+    + '<path d="M70,48 Q78,42 76,32" stroke="#C9A96E" stroke-width="4" stroke-linecap="round"/>'
+    + '</svg>';
+}
+
+function renderScene(agents, tasks) {
   if (!agents) return;
   const container = $('scene-characters');
+
+  // Find agents
+  const mamma = agents.find(a => a.id === 'big_mamma');
+  const tom = agents.find(a => a.id === 'tom');
+  const spike = agents.find(a => a.id === 'spike');
+  const jerrys = agents.filter(a => a.id.startsWith('jerry_'));
+
   container.innerHTML = '';
 
-  agents.forEach(a => {
-    if (a.state === 'offline') return;
+  // Big Mamma - left side, supervisor position
+  if (mamma && mamma.state !== 'offline') {
+    const mammaDiv = document.createElement('div');
+    mammaDiv.className = 'scene-char';
+    mammaDiv.id = 'scene-mamma';
 
-    let animClass = '';
-    let leftPos = '50%';
-    let svg = '';
+    if (mamma.state === 'running') {
+      // Walking, checking on workers
+      mammaDiv.style.left = '12%';
+      mammaDiv.innerHTML = sceneMammaWalking();
+    } else {
+      // Idle - standing, ordering position
+      mammaDiv.style.left = '8%';
+      mammaDiv.innerHTML = sceneMammaOrdering();
 
-    if (a.id === 'big_mamma') {
-      if (a.state === 'running') {
-        animClass = 'walking';
-      } else {
-        leftPos = '15%';
+      // Show speech bubble when assigning tasks
+      if (tasks && tasks.some(t => t.status === 'in_progress')) {
+        const inProgress = tasks.filter(t => t.status === 'in_progress');
+        if (inProgress.length > 0) {
+          const bubble = document.createElement('div');
+          bubble.className = 'speech-bubble';
+          bubble.textContent = 'Get to work! ' + inProgress.length + ' tasks!';
+          mammaDiv.appendChild(bubble);
+        }
       }
-      svg = charMamma();
-    } else if (a.id === 'tom') {
-      if (a.state === 'running') {
-        animClass = 'running';
-      } else if (a.state === 'hibernating') {
-        leftPos = '75%';
-      } else {
-        leftPos = '60%';
-      }
-      svg = charTom();
-    } else if (a.id.startsWith('jerry')) {
-      if (a.state === 'running') {
-        animClass = 'scurrying';
-      } else {
-        const jerryNum = parseInt(a.id.split('_')[1]) || 0;
-        leftPos = (5 + jerryNum * 8) + '%';
-      }
-      svg = charJerry();
-    } else if (a.id === 'spike') {
-      if (a.state === 'checking') {
-        animClass = 'patrolling';
-      } else {
-        leftPos = '85%';
-      }
-      svg = charSpike();
     }
 
-    const charDiv = document.createElement('div');
-    charDiv.className = 'scene-char ' + animClass + ' char char-' + a.id.replace('_', '-') + ' st-' + a.state;
-    if (!animClass) charDiv.style.left = leftPos;
-    charDiv.innerHTML = svg;
-    container.appendChild(charDiv);
+    container.appendChild(mammaDiv);
+  }
+
+  // Tom - middle-left area
+  if (tom && tom.state !== 'offline') {
+    const tomDiv = document.createElement('div');
+    tomDiv.className = 'scene-char';
+    tomDiv.id = 'scene-tom';
+
+    if (tom.state === 'running') {
+      // Running with task
+      tomDiv.style.left = '35%';
+      tomDiv.innerHTML = sceneTomRunning();
+
+      // Show task card if tom has a task
+      if (tom.task) {
+        const taskCard = document.createElement('div');
+        taskCard.className = 'task-card';
+        taskCard.textContent = '#' + tom.task.split(':')[0].replace('#', '');
+        taskCard.style.top = '20px';
+        taskCard.style.left = '45px';
+        taskCard.style.setProperty('--tx', '30px');
+        taskCard.style.setProperty('--ty', '-20px');
+        tomDiv.appendChild(taskCard);
+      }
+    } else if (tom.state === 'hibernating') {
+      // Sleeping
+      tomDiv.style.left = '70%';
+      tomDiv.innerHTML = sceneTomSitting();
+      tomDiv.style.opacity = '0.6';
+    } else {
+      // Idle - sitting, listening to Big Mamma
+      tomDiv.style.left = '28%';
+      tomDiv.innerHTML = sceneTomSitting();
+    }
+
+    container.appendChild(tomDiv);
+  }
+
+  // Jerrys - scattered across bottom
+  jerrys.forEach((jerry, idx) => {
+    if (jerry.state === 'offline') return;
+
+    const jerryDiv = document.createElement('div');
+    jerryDiv.className = 'scene-char';
+    jerryDiv.id = 'scene-jerry-' + idx;
+    jerryDiv.style.bottom = '75px'; // Lower than others
+
+    if (jerry.state === 'running') {
+      // Running with task
+      const positions = ['48%', '62%', '75%', '88%'];
+      jerryDiv.style.left = positions[idx % positions.length];
+      jerryDiv.innerHTML = sceneJerryRunning();
+
+      // Show task card
+      if (jerry.task || (tasks && tasks.some(t => t.status === 'in_progress'))) {
+        const taskCard = document.createElement('div');
+        taskCard.className = 'task-card';
+        taskCard.textContent = 'Jerry #' + idx;
+        taskCard.style.top = '10px';
+        taskCard.style.left = '35px';
+        taskCard.style.setProperty('--tx', (20 + idx * 10) + 'px');
+        taskCard.style.setProperty('--ty', '-15px');
+        jerryDiv.appendChild(taskCard);
+      }
+    } else {
+      // Hiding in hole
+      const holePositions = ['52%', '68%', '82%', '92%'];
+      jerryDiv.style.left = holePositions[idx % holePositions.length];
+      jerryDiv.style.bottom = '78px';
+      jerryDiv.innerHTML = sceneJerryHiding();
+    }
+
+    container.appendChild(jerryDiv);
   });
+
+  // Spike - right side, guard position
+  if (spike && spike.state !== 'offline') {
+    const spikeDiv = document.createElement('div');
+    spikeDiv.className = 'scene-char';
+    spikeDiv.id = 'scene-spike';
+
+    if (spike.state === 'checking') {
+      // Patrolling
+      spikeDiv.style.left = '82%';
+      spikeDiv.innerHTML = sceneSpikePatrolling();
+    } else {
+      // Standing guard
+      spikeDiv.style.left = '88%';
+      spikeDiv.innerHTML = sceneSpikePatrolling();
+      spikeDiv.style.opacity = spike.state === 'passed' ? '0.8' : '1';
+    }
+
+    container.appendChild(spikeDiv);
+  }
 }
 
 // ── Render: Agents ─────────────────────────────────────────────────────────────
@@ -1128,7 +1476,7 @@ async function poll() {
 
       currentState = await api('GET', '/api/state?path=' + path);
       renderAgents(currentState.agents);
-      renderScene(currentState.agents);
+      renderScene(currentState.agents, currentState.tasks);
       renderTasks(currentState.tasks);
       updateControls(currentState.running);
       updateTitle();
@@ -1587,6 +1935,111 @@ async function init() {
 }
 
 init();
+
+// ── AI Settings ────────────────────────────────────────────────────────────────
+
+const PROVIDER_HINTS = {
+  claude: {
+    model: 'e.g. <code>claude-opus-4-8</code> (planner/worker) · <code>claude-haiku-4-5-20251001</code> (jerry/qa). Leave blank for the CLI default.',
+    env: 'Key saved to <code>house-model.conf</code> → auto-injected as <code>ANTHROPIC_API_KEY</code>. Alternatively set it in your shell environment.'
+  },
+  gemini: {
+    model: 'e.g. <code>gemini-2.0-pro</code> (planner/worker) · <code>gemini-2.0-flash</code> (jerry/qa). Leave blank for the CLI default.',
+    env: 'Key saved to <code>house-model.conf</code> → auto-injected as <code>GEMINI_API_KEY</code>. Requires the <code>gemini</code> CLI installed.'
+  },
+  openai: {
+    model: 'e.g. <code>gpt-4o</code> (planner/worker) · <code>gpt-4o-mini</code> (jerry/qa). Leave blank for the CLI default.',
+    env: 'Key saved to <code>house-model.conf</code> → auto-injected as <code>OPENAI_API_KEY</code>. Compatible with any OpenAI-API-shaped CLI.'
+  }
+};
+
+let _aiCurrentProvider = 'claude';
+let _aiKeyVisible = false;
+
+async function openAiSettings() {
+  const data = await api('GET', '/api/model-config');
+  if (data.error) { toast('Could not load AI config: ' + data.error, 'error'); return; }
+
+  _aiCurrentProvider = data.HOUSE_PROVIDER || 'claude';
+  $('ai-planner-model').value = data.HOUSE_PLANNER_MODEL || '';
+  $('ai-worker-model').value  = data.HOUSE_WORKER_MODEL  || '';
+  $('ai-jerry-model').value   = data.HOUSE_JERRY_MODEL   || '';
+  $('ai-qa-model').value      = data.HOUSE_QA_MODEL      || '';
+  $('ai-api-key').value       = data.HOUSE_API_KEY       || '';
+  $('ai-base-url').value      = data.HOUSE_BASE_URL      || '';
+
+  _aiKeyVisible = false;
+  $('ai-api-key').type = 'password';
+  document.querySelector('.ai-key-toggle').textContent = 'Show';
+
+  _refreshProviderTabs();
+  _refreshProviderHints();
+  $('ai-settings-error').style.display = 'none';
+  $('ai-settings-modal').style.display = 'flex';
+}
+
+function closeAiSettings() {
+  $('ai-settings-modal').style.display = 'none';
+}
+
+function selectProvider(p) {
+  _aiCurrentProvider = p;
+  _refreshProviderTabs();
+  _refreshProviderHints();
+}
+
+function _refreshProviderTabs() {
+  document.querySelectorAll('.ai-provider-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.provider === _aiCurrentProvider);
+  });
+}
+
+function _refreshProviderHints() {
+  const h = PROVIDER_HINTS[_aiCurrentProvider] || PROVIDER_HINTS.claude;
+  $('ai-model-hint').innerHTML = h.model;
+  $('ai-env-hint').innerHTML   = h.env;
+}
+
+function toggleKeyVisibility() {
+  _aiKeyVisible = !_aiKeyVisible;
+  $('ai-api-key').type = _aiKeyVisible ? 'text' : 'password';
+  document.querySelector('.ai-key-toggle').textContent = _aiKeyVisible ? 'Hide' : 'Show';
+}
+
+async function saveAiSettings() {
+  const payload = {
+    HOUSE_PROVIDER:      _aiCurrentProvider,
+    HOUSE_PLANNER_MODEL: $('ai-planner-model').value.trim(),
+    HOUSE_WORKER_MODEL:  $('ai-worker-model').value.trim(),
+    HOUSE_JERRY_MODEL:   $('ai-jerry-model').value.trim(),
+    HOUSE_QA_MODEL:      $('ai-qa-model').value.trim(),
+    HOUSE_API_KEY:       $('ai-api-key').value.trim(),
+    HOUSE_BASE_URL:      $('ai-base-url').value.trim(),
+  };
+  const res = await api('POST', '/api/model-config', payload);
+  if (res.ok) {
+    closeAiSettings();
+    updateAiBadge(payload);
+    toast('AI settings saved — takes effect on next House start', 'success');
+  } else {
+    $('ai-settings-error').textContent = res.error || 'Save failed';
+    $('ai-settings-error').style.display = 'block';
+  }
+}
+
+function updateAiBadge(cfg) {
+  const provider = cfg.HOUSE_PROVIDER || 'claude';
+  const label = { claude: 'Claude', gemini: 'Gemini', openai: 'OpenAI' }[provider] || provider;
+  $('ai-badge').textContent = 'Tom, Jerry & Big Mamma · ' + label + ' ⚙';
+}
+
+// Load current provider into badge on startup
+(async () => {
+  try {
+    const d = await api('GET', '/api/model-config');
+    if (d && !d.error) updateAiBadge(d);
+  } catch (e) {}
+})();
 </script>
 </body>
 </html>

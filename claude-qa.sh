@@ -163,9 +163,9 @@ run_checks() {
     house_log "🐶🔍 *sniff sniff* Spike is inspecting the premises..."
   fi
 
-  # Let Claude analyze the project and run whatever checks are appropriate.
+  # Let the AI analyze the project and run whatever checks are appropriate.
   # This works for any stack: web, mobile, game dev, backend, ML, etc.
-  CLAUDE_QA="claude -p --dangerously-skip-permissions"
+  CLAUDE_QA=$(get_ai_cmd qa "--auto")
 
   local qa_output=""
   qa_output=$($CLAUDE_QA "You are a QA validator. Analyze this project and run the appropriate build, compile, lint, and type-check commands to verify correctness.
